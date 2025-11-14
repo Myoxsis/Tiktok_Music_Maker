@@ -181,6 +181,8 @@ def render_mp4(
     fps=30,
     max_duration=None,
     reverb=False,
+    start_time=0.0,
+    end_time=None,
 ):
     """
     Render an MP4 video from the given audio file and template,
@@ -191,10 +193,27 @@ def render_mp4(
     y, sr, beat_times = analyze_audio(audio_path)
     total_duration = len(y) / sr
 
-    if max_duration is not None:
-        duration = min(total_duration, max_duration)
+    segment_start = max(0.0, min(start_time, total_duration))
+
+    if end_time is None:
+        segment_end = total_duration
     else:
-        duration = total_duration
+        segment_end = max(segment_start, min(end_time, total_duration))
+
+    if max_duration is not None:
+        segment_end = min(segment_start + max_duration, segment_end)
+
+    start_idx = int(segment_start * sr)
+    end_idx = int(segment_end * sr)
+
+    if end_idx <= start_idx:
+        raise ValueError("Selected time range is too short to render video.")
+
+    y = y[start_idx:end_idx]
+    beat_mask = (beat_times >= segment_start) & (beat_times <= segment_end)
+    beat_times = beat_times[beat_mask] - segment_start
+
+    duration = len(y) / sr
 
     # Time steps for frames
     n_frames = int(duration * fps)
@@ -310,6 +329,48 @@ max_duration = st.number_input(
     step=1.0,
 )
 
+start_time = 0.0
+end_time = None
+
+if uploaded_file is not None:
+    uploaded_file.seek(0)
+    try:
+        preview_y, preview_sr = librosa.load(uploaded_file, sr=None, mono=True)
+    finally:
+        uploaded_file.seek(0)
+
+    total_preview_samples = len(preview_y)
+    if total_preview_samples == 0:
+        st.warning("Uploaded audio appears to be empty.")
+    else:
+        audio_duration = total_preview_samples / preview_sr
+        st.write(f"Audio duration: {audio_duration:.2f} seconds")
+
+        time_axis = np.linspace(0, audio_duration, total_preview_samples)
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.plot(time_axis, preview_y, linewidth=0.6, color="#4f8bf9")
+        ax.set_xlim(0, audio_duration)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude")
+        ax.set_title("Waveform preview")
+        st.pyplot(fig)
+
+        default_end = float(audio_duration)
+        start_time, end_time = st.slider(
+            "Select start and end time (seconds)",
+            min_value=0.0,
+            max_value=float(audio_duration),
+            value=(0.0, default_end),
+            step=0.1,
+        )
+        st.caption(
+            "The visualizer will render only the selected section."
+            " Max duration above still applies if it is greater than 0."
+        )
+
+        if start_time == end_time:
+            st.warning("Choose a range longer than 0 seconds for rendering.")
+
 render_button = st.button("Render MP4")
 
 if render_button:
@@ -317,6 +378,7 @@ if render_button:
         st.error("Please upload an audio file first.")
     else:
         # Save uploaded audio to a temp file
+        uploaded_file.seek(0)
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_audio:
             tmp_audio.write(uploaded_file.read())
             audio_path = tmp_audio.name
@@ -340,6 +402,8 @@ if render_button:
                 fps=int(fps),
                 max_duration=max_d,
                 reverb=reverb_enabled,
+                start_time=float(start_time),
+                end_time=float(end_time),
             )
 
             progress.progress(100)
