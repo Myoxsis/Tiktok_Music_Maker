@@ -1,0 +1,322 @@
+import os
+import tempfile
+import math
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+import streamlit as st
+import librosa
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+
+# Use a non-interactive backend (important when running under Streamlit)
+matplotlib.use("Agg")
+
+# ---------- CONFIG ----------
+W, H = 1080, 1920   # TikTok-style vertical resolution
+FPS_DEFAULT = 30
+
+
+# ---------- AUDIO ANALYSIS ----------
+
+def analyze_audio(audio_path):
+    """
+    Load audio and compute beat times.
+    Returns: y, sr, beat_times (np.array of seconds)
+    """
+    y, sr = librosa.load(audio_path, sr=None, mono=True)
+    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+    return y, sr, beat_times
+
+
+def beat_intensity(t, beat_times, window=0.06):
+    """
+    Return a value 0..1 indicating how close time t is to a beat.
+    window = +/- window seconds around beat.
+    """
+    if beat_times.size == 0:
+        return 0.0
+    idx = np.argmin(np.abs(beat_times - t))
+    dist = abs(beat_times[idx] - t)
+    if dist < window:
+        return float(1.0 - dist / window)
+    return 0.0
+
+
+def get_spectrum_at_time(y, sr, t, n_fft=2048, n_bands=32):
+    """
+    Compute a simple magnitude spectrum at time t, grouped into n_bands.
+    Returns normalized band magnitudes in [0,1].
+    """
+    center = int(t * sr)
+    half = n_fft // 2
+    start = max(center - half, 0)
+    end = min(center + half, len(y))
+
+    window = np.zeros(n_fft, dtype=np.float32)
+    audio_slice = y[start:end]
+    window[:len(audio_slice)] = audio_slice
+
+    # Hann window for smoother spectrum
+    windowed = window * np.hanning(n_fft)
+    spectrum = np.fft.rfft(windowed)
+    magnitudes = np.abs(spectrum)
+
+    freqs = np.fft.rfftfreq(n_fft, 1 / sr)
+    max_freq = sr / 2
+    band_edges = np.linspace(0, max_freq, n_bands + 1)
+
+    bands = []
+    for i in range(n_bands):
+        f_min, f_max = band_edges[i], band_edges[i + 1]
+        mask = (freqs >= f_min) & (freqs < f_max)
+        if np.any(mask):
+            bands.append(magnitudes[mask].mean())
+        else:
+            bands.append(0.0)
+
+    bands = np.array(bands, dtype=np.float32)
+    max_val = bands.max()
+    if max_val > 0:
+        bands /= max_val
+    return bands
+
+
+# ---------- VISUAL TEMPLATES ----------
+
+CENTER = (W // 2, H // 2)
+
+
+def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64):
+    """
+    Circular spectrum visual. If reverb=True, draws an extra ring pulse on beats.
+    """
+    bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+    beat = beat_intensity(t, beat_times)
+
+    img = Image.new("RGB", (W, H), (5, 5, 15))  # dark background
+    draw = ImageDraw.Draw(img)
+
+    base_radius = 320
+    max_extra = 260 * (1 + 0.5 * beat)
+
+    n = len(bands)
+    for i, v in enumerate(bands):
+        angle = 2 * math.pi * i / n
+        extra = float(v) * max_extra
+        r1 = base_radius
+        r2 = base_radius + extra
+
+        x1 = CENTER[0] + r1 * math.cos(angle)
+        y1 = CENTER[1] + r1 * math.sin(angle)
+        x2 = CENTER[0] + r2 * math.cos(angle)
+        y2 = CENTER[1] + r2 * math.sin(angle)
+
+        draw.line((x1, y1, x2, y2), width=4, fill=(255, 255, 255))
+
+    # "Reverb" ring pulse on strong beats
+    if reverb and beat > 0.0:
+        ring_radius = base_radius + max_extra * 1.1
+        thickness = int(6 + 20 * beat)
+
+        x1 = CENTER[0] - ring_radius
+        y1 = CENTER[1] - ring_radius
+        x2 = CENTER[0] + ring_radius
+        y2 = CENTER[1] + ring_radius
+
+        draw.ellipse(
+            (x1, y1, x2, y2),
+            outline=(200, 200, 255),
+            width=thickness,
+        )
+
+    return np.array(img)
+
+
+def draw_bar_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=32):
+    """
+    Bar spectrum visual. If reverb=True, adds a faint echo above the bars on beats.
+    """
+    bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+    beat = beat_intensity(t, beat_times)
+
+    img = Image.new("RGB", (W, H), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    margin_bottom = 120
+    margin_side = 80
+    bar_width = (W - 2 * margin_side) / n_bands
+    max_bar_height = H * 0.6
+
+    for i, v in enumerate(bands):
+        height = float(v) * max_bar_height * (1 + 0.4 * beat)
+        x1 = int(margin_side + i * bar_width)
+        x2 = int(margin_side + (i + 1) * bar_width * 0.85)
+        y2 = H - margin_bottom
+        y1 = int(y2 - height)
+
+        # main bar
+        draw.rectangle([x1, y1, x2, y2], fill=(255, 255, 255))
+
+        # "Reverb" echo bar slightly above the main one on strong beats
+        if reverb and beat > 0.0:
+            echo_height = int(height * (0.3 + 0.5 * beat))
+            echo_y2 = y1 - 10
+            echo_y1 = max(echo_y2 - echo_height, 0)
+            draw.rectangle([x1, echo_y1, x2, echo_y2], fill=(180, 180, 255))
+
+    return np.array(img)
+
+
+# ---------- RENDERING WITH MATPLOTLIB + FFMPEG ----------
+
+def render_mp4(
+    audio_path,
+    output_path,
+    template="circular",
+    fps=30,
+    max_duration=None,
+    reverb=False,
+):
+    """
+    Render an MP4 video (visuals only) from the given audio file and template,
+    using matplotlib.animation.FFMpegWriter.
+    """
+    # Analyze audio
+    y, sr, beat_times = analyze_audio(audio_path)
+    total_duration = len(y) / sr
+
+    if max_duration is not None:
+        duration = min(total_duration, max_duration)
+    else:
+        duration = total_duration
+
+    # Time steps for frames
+    n_frames = int(duration * fps)
+    if n_frames < 1:
+        n_frames = 1
+    times = np.linspace(0, duration, n_frames, endpoint=False)
+
+    # Setup matplotlib figure
+    dpi = 100
+    fig_w = W / dpi
+    fig_h = H / dpi
+
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+    ax = plt.axes([0, 0, 1, 1])  # full-figure axes
+    ax.axis("off")
+
+    # Initial frame
+    t0 = times[0]
+    if template == "circular":
+        frame0 = draw_circular_spectrum_frame(t0, y, sr, beat_times, reverb=reverb)
+    else:
+        frame0 = draw_bar_spectrum_frame(t0, y, sr, beat_times, reverb=reverb)
+
+    im = ax.imshow(frame0, animated=True)
+
+    def update(i):
+        t = times[i]
+        if template == "circular":
+            frame = draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=reverb)
+        else:
+            frame = draw_bar_spectrum_frame(t, y, sr, beat_times, reverb=reverb)
+        im.set_array(frame)
+        return [im]
+
+    ani = FuncAnimation(
+        fig,
+        update,
+        frames=n_frames,
+        interval=1000 / fps,
+        blit=True,
+    )
+
+    writer = FFMpegWriter(fps=fps, bitrate=5000)
+    ani.save(output_path, writer=writer)
+
+    plt.close(fig)
+
+
+# ---------- STREAMLIT UI ----------
+
+st.set_page_config(page_title="Beat Visualizer", layout="centered")
+
+st.title("🎵 Beat-Synced Visualizer (MP4 via FFMpegWriter)")
+
+st.write(
+    "Upload a track and generate a vertical MP4 video with either a circular "
+    "spectrum or a bar spectrum visual, synced to the beat.\n\n"
+    "**Note:** this exports only the visuals (no audio). You can add the audio in a video editor or directly in TikTok."
+)
+
+uploaded_file = st.file_uploader("Upload audio file", type=["mp3", "wav", "flac", "ogg"])
+
+col1, col2 = st.columns(2)
+with col1:
+    template_choice = st.radio(
+        "Template",
+        ["Circular spectrum", "Bar spectrum"],
+    )
+with col2:
+    fps = st.slider("FPS", 10, 60, FPS_DEFAULT)
+
+reverb_enabled = st.checkbox("Enable beat reverb effect", value=True)
+
+max_duration = st.number_input(
+    "Max duration (seconds, 0 = full track)",
+    min_value=0.0,
+    value=10.0,
+    step=1.0,
+)
+
+render_button = st.button("Render MP4")
+
+if render_button:
+    if uploaded_file is None:
+        st.error("Please upload an audio file first.")
+    else:
+        # Save uploaded audio to a temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_audio:
+            tmp_audio.write(uploaded_file.read())
+            audio_path = tmp_audio.name
+
+        # Prepare output path
+        output_dir = tempfile.mkdtemp()
+        output_path = os.path.join(output_dir, "visualizer.mp4")
+
+        st.write("Rendering... longer duration and higher FPS will take more time.")
+        progress = st.progress(0)
+
+        try:
+            progress.progress(10)
+            template_key = "circular" if "Circular" in template_choice else "bars"
+            max_d = max_duration if max_duration > 0 else None
+
+            render_mp4(
+                audio_path=audio_path,
+                output_path=output_path,
+                template=template_key,
+                fps=int(fps),
+                max_duration=max_d,
+                reverb=reverb_enabled,
+            )
+
+            progress.progress(100)
+
+            st.success("Done! Download your MP4 below:")
+            with open(output_path, "rb") as f:
+                st.download_button(
+                    label="Download MP4",
+                    data=f,
+                    file_name="visualizer.mp4",
+                    mime="video/mp4",
+                )
+
+        except Exception as e:
+            st.error(f"Error during rendering: {e}")
+        finally:
+            progress.empty()
