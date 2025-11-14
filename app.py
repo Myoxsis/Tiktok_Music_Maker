@@ -1,6 +1,7 @@
 import os
 import tempfile
 import math
+import subprocess
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -182,8 +183,9 @@ def render_mp4(
     reverb=False,
 ):
     """
-    Render an MP4 video (visuals only) from the given audio file and template,
-    using matplotlib.animation.FFMpegWriter.
+    Render an MP4 video from the given audio file and template,
+    using matplotlib.animation.FFMpegWriter, and then mux the original audio
+    into the exported video so it is ready to post.
     """
     # Analyze audio
     y, sr, beat_times = analyze_audio(audio_path)
@@ -235,10 +237,45 @@ def render_mp4(
         blit=True,
     )
 
+    temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    temp_video_path = temp_video.name
+    temp_video.close()
+
     writer = FFMpegWriter(fps=fps, bitrate=5000)
-    ani.save(output_path, writer=writer)
+    ani.save(temp_video_path, writer=writer)
 
     plt.close(fig)
+
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        temp_video_path,
+        "-i",
+        audio_path,
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-shortest",
+        output_path,
+    ]
+
+    try:
+        subprocess.run(
+            ffmpeg_cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg is required to mux audio into the MP4") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore")
+        raise RuntimeError(f"ffmpeg failed while adding audio: {stderr}") from exc
+    finally:
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
 
 
 # ---------- STREAMLIT UI ----------
@@ -250,7 +287,7 @@ st.title("🎵 Beat-Synced Visualizer (MP4 via FFMpegWriter)")
 st.write(
     "Upload a track and generate a vertical MP4 video with either a circular "
     "spectrum or a bar spectrum visual, synced to the beat.\n\n"
-    "**Note:** this exports only the visuals (no audio). You can add the audio in a video editor or directly in TikTok."
+    "The exported MP4 now includes the original audio automatically so it is ready to upload."
 )
 
 uploaded_file = st.file_uploader("Upload audio file", type=["mp3", "wav", "flac", "ogg"])
