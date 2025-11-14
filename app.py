@@ -307,14 +307,21 @@ if render_button:
 
             progress.progress(100)
 
-            st.success("Done! Download your MP4 below:")
+            st.success("Done! Preview or download your MP4 below:")
+
+            # Show the freshly rendered video directly in the app so users can
+            # verify the visuals without needing to download first.
+            st.video(output_path)
+
             with open(output_path, "rb") as f:
-                st.download_button(
-                    label="Download MP4",
-                    data=f,
-                    file_name="visualizer.mp4",
-                    mime="video/mp4",
-                )
+                video_bytes = f.read()
+
+            st.download_button(
+                label="Download MP4",
+                data=video_bytes,
+                file_name="visualizer.mp4",
+                mime="video/mp4",
+            )
 
         except Exception as e:
             st.error(f"Error during rendering: {e}")
