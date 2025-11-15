@@ -1,5 +1,6 @@
 import io
 import os
+import shutil
 import tempfile
 import math
 import subprocess
@@ -441,6 +442,10 @@ if render_button:
     if uploaded_file is None:
         st.error("Please upload an audio file first.")
     else:
+        audio_path = None
+        output_dir = None
+        output_path = None
+
         # Save uploaded audio to a temp file
         uploaded_file.seek(0)
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_audio:
@@ -504,5 +509,12 @@ if render_button:
             st.error(f"Error during rendering: {e}")
         finally:
             progress.empty()
-            if processed_audio_path and processed_audio_path != audio_path:
+            if processed_audio_path and processed_audio_path != audio_path and os.path.exists(processed_audio_path):
                 os.remove(processed_audio_path)
+
+            for temp_path in (audio_path, output_path):
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+            if output_dir:
+                shutil.rmtree(output_dir, ignore_errors=True)
