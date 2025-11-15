@@ -15,6 +15,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.animation import FuncAnimation, FFMpegWriter
+import plotly.graph_objects as go
 
 # Use a non-interactive backend (important when running under Streamlit)
 matplotlib.use("Agg")
@@ -455,13 +456,38 @@ if uploaded_file is not None:
         st.caption("Listen to the adjusted speed before rendering your video.")
 
         time_axis = np.linspace(0, adjusted_duration, len(adjusted_y))
-        fig, ax = plt.subplots(figsize=(10, 3))
-        ax.plot(time_axis, adjusted_y, linewidth=0.6, color="#4f8bf9")
-        ax.set_xlim(0, adjusted_duration)
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Amplitude")
-        ax.set_title("Waveform preview")
-        st.pyplot(fig)
+        waveform_fig = go.Figure(
+            data=
+            [
+                go.Scatter(
+                    x=time_axis,
+                    y=adjusted_y,
+                    mode="lines",
+                    line=dict(color="#4f8bf9", width=1),
+                    hovertemplate="Time: %{x:.2f}s<br>Amplitude: %{y:.3f}<extra></extra>",
+                )
+            ]
+        )
+        waveform_fig.update_layout(
+            title="Waveform preview",
+            xaxis_title="Time (s)",
+            yaxis_title="Amplitude",
+            hovermode="x",
+            margin=dict(l=40, r=20, t=50, b=40),
+        )
+        waveform_fig.update_xaxes(
+            rangeslider=dict(visible=True),
+            rangemode="tozero",
+            showspikes=True,
+            spikemode="across",
+            spikesnap="cursor",
+        )
+        waveform_fig.update_yaxes(showspikes=True, spikemode="across")
+        st.plotly_chart(waveform_fig, use_container_width=True)
+        st.caption(
+            "Use the Plotly zoom and range-slider controls above to inspect the "
+            "waveform before choosing your final start and end times."
+        )
 
         default_end = float(adjusted_duration)
         start_time, end_time = st.slider(
