@@ -79,6 +79,72 @@ def apply_bass_boost(y, sr, boost_db, cutoff=150.0):
     return boosted.astype(y.dtype, copy=False)
 
 
+def apply_level2a_bass_enhancement(y, sr, amount=0.0):
+    """
+    Apply a multi-stage "Level-2A" bass enhancer.
+
+    The effect mimics a two-amp analog chain:
+    1. Isolate sub (<=90 Hz) and punch (90-220 Hz) bands.
+    2. Drive each band with soft saturation to thicken harmonics.
+    3. Recombine with the dry signal plus a hint of high-frequency air.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Mono audio samples (-1..1).
+    sr : int
+        Sample rate of ``y``.
+    amount : float
+        0.0-1.0 blend amount. Higher values push the saturation harder.
+    """
+
+    if amount <= 0.0 or sr <= 0 or y.size == 0:
+        return y
+
+    # Work in float32 to keep numerical noise low and saturation predictable.
+    y_work = y.astype(np.float32, copy=True)
+
+    # Stage 1: isolate sub frequencies.
+    sub = lowpass_filter(y_work, sr, cutoff=90.0, numtaps=401)
+
+    # Stage 2: capture 90-220 Hz punch by subtracting the subs from a broader lowpass.
+    low_ext = lowpass_filter(y_work, sr, cutoff=220.0, numtaps=401)
+    punch = low_ext - sub
+
+    # Stage 3: preserve a bit of high-end definition so the mix does not get muddy.
+    high_shelf = y_work - lowpass_filter(y_work, sr, cutoff=1200.0, numtaps=401)
+
+    # Soft saturation for musical harmonics.
+    sub_drive = 1.0 + 4.0 * amount
+    punch_drive = 1.0 + 2.5 * amount
+
+    sub_processed = np.tanh(sub * sub_drive)
+    punch_processed = np.tanh(punch * punch_drive)
+
+    # Recombine with a balance tailored for "Level-2A" punchiness.
+    dry_gain = 1.0 - 0.35 * amount
+    sub_gain = 0.55 + 0.35 * amount
+    punch_gain = 0.35 + 0.25 * amount
+    air_gain = 0.08 * amount
+
+    enhanced = (
+        dry_gain * y_work
+        + sub_gain * sub_processed
+        + punch_gain * punch_processed
+        + air_gain * high_shelf
+    )
+
+    # Additional harmonic sparkle derived from the two driven bands.
+    harmonic = np.tanh((sub_processed + punch_processed) * (1.5 + amount))
+    enhanced += harmonic * (0.12 * amount)
+
+    peak = np.max(np.abs(enhanced))
+    if peak > 1.0:
+        enhanced /= peak
+
+    return enhanced.astype(y.dtype, copy=False)
+
+
 def apply_reverb(y, sr, mix, delay_ms=80.0, decay=0.45, echoes=5):
     """Simple Schroeder-style reverb made from a stack of echoes."""
     if mix <= 0.0:
@@ -459,6 +525,15 @@ bass_boost_db = st.slider(
     help="Increase low-frequency energy before previewing or rendering.",
 )
 
+level2a_amount = st.slider(
+    "Level-2A bass enhancement",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.0,
+    step=0.05,
+    help="Analog-style, multi-stage bass enhancer. Blend amounts above 0.4 deliver the signature punch.",
+)
+
 max_duration = st.number_input(
     "Max duration (seconds, 0 = full track)",
     min_value=0.0,
@@ -483,6 +558,10 @@ if uploaded_file is not None:
         adjusted_y = apply_speed_change(preview_y, playback_speed)
         if bass_boost_db > 0:
             adjusted_y = apply_bass_boost(adjusted_y, preview_sr, bass_boost_db)
+        if level2a_amount > 0:
+            adjusted_y = apply_level2a_bass_enhancement(
+                adjusted_y, preview_sr, level2a_amount
+            )
         if reverb_amount > 0:
             adjusted_y = apply_reverb(adjusted_y, preview_sr, reverb_amount)
 
@@ -576,7 +655,10 @@ if render_button:
             max_d = max_duration if max_duration > 0 else None
 
             needs_processing = (
-                playback_speed != 1.0 or bass_boost_db > 0 or reverb_amount > 0
+                playback_speed != 1.0
+                or bass_boost_db > 0
+                or level2a_amount > 0
+                or reverb_amount > 0
             )
 
             if needs_processing:
@@ -585,6 +667,10 @@ if render_button:
                     y_full = apply_speed_change(y_full, playback_speed)
                 if bass_boost_db > 0:
                     y_full = apply_bass_boost(y_full, sr_full, bass_boost_db)
+                if level2a_amount > 0:
+                    y_full = apply_level2a_bass_enhancement(
+                        y_full, sr_full, level2a_amount
+                    )
                 if reverb_amount > 0:
                     y_full = apply_reverb(y_full, sr_full, reverb_amount)
 
