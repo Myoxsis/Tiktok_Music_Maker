@@ -627,6 +627,23 @@ st.write(
 
 uploaded_file = st.file_uploader("Upload audio file", type=["mp3", "wav", "flac", "ogg"])
 
+preview_y = None
+preview_sr = None
+detected_phonk_bpm = None
+
+if uploaded_file is not None:
+    uploaded_file.seek(0)
+    try:
+        preview_y, preview_sr = librosa.load(uploaded_file, sr=None, mono=True)
+        if preview_y.size > 0:
+            detected_phonk_bpm = detect_bpm(preview_y, preview_sr)
+    except Exception as exc:
+        st.error(f"Unable to analyze uploaded audio: {exc}")
+        preview_y, preview_sr = None, None
+        detected_phonk_bpm = None
+    finally:
+        uploaded_file.seek(0)
+
 col1, col2 = st.columns(2)
 with col1:
     template_choice = st.radio(
@@ -678,7 +695,13 @@ phonk_enabled = st.checkbox(
     help="Applies BPM-matched time-stretching, -4 semitone pitch drop, cowbell hits, bass boost, and light distortion.",
 )
 
-phonk_target_bpm = 170.0
+phonk_target_bpm_default = 170.0
+if detected_phonk_bpm and detected_phonk_bpm > 0:
+    phonk_target_bpm_default = float(
+        np.clip(detected_phonk_bpm, 120.0, 220.0)
+    )
+
+phonk_target_bpm = phonk_target_bpm_default
 phonk_pitch_down = -4.0
 phonk_cowbell_gain = 0.7
 phonk_distortion_db = 6.0
@@ -689,10 +712,14 @@ if phonk_enabled:
         "Phonk target BPM",
         min_value=120.0,
         max_value=220.0,
-        value=170.0,
+        value=float(phonk_target_bpm_default),
         step=1.0,
         help="Detected tempo is stretched to this BPM before remixing.",
     )
+    if detected_phonk_bpm and detected_phonk_bpm > 0:
+        st.caption(
+            f"Detected {detected_phonk_bpm:.1f} BPM from the upload and used it as the default phonk target."
+        )
     phonk_pitch_down = st.slider(
         "Pitch shift (semitones)",
         min_value=-12.0,
@@ -737,75 +764,72 @@ start_time = 0.0
 end_time = None
 
 if uploaded_file is not None:
-    uploaded_file.seek(0)
-    try:
-        preview_y, preview_sr = librosa.load(uploaded_file, sr=None, mono=True)
-    finally:
-        uploaded_file.seek(0)
-
-    total_preview_samples = len(preview_y)
-    if total_preview_samples == 0:
-        st.warning("Uploaded audio appears to be empty.")
+    if preview_y is None or preview_sr is None:
+        st.error("Uploaded audio could not be decoded for preview.")
     else:
-        adjusted_y = apply_speed_change(preview_y, playback_speed)
-        if bass_boost_db > 0:
-            adjusted_y = apply_bass_boost(adjusted_y, preview_sr, bass_boost_db)
-        if level2a_amount > 0:
-            adjusted_y = apply_level2a_bass_enhancement(
-                adjusted_y, preview_sr, level2a_amount
+        total_preview_samples = len(preview_y)
+        if total_preview_samples == 0:
+            st.warning("Uploaded audio appears to be empty.")
+        else:
+            adjusted_y = apply_speed_change(preview_y, playback_speed)
+            if bass_boost_db > 0:
+                adjusted_y = apply_bass_boost(adjusted_y, preview_sr, bass_boost_db)
+            if level2a_amount > 0:
+                adjusted_y = apply_level2a_bass_enhancement(
+                    adjusted_y, preview_sr, level2a_amount
+                )
+            if reverb_amount > 0:
+                adjusted_y = apply_reverb(adjusted_y, preview_sr, reverb_amount)
+            if phonk_enabled:
+                adjusted_y = make_brazilian_phonk_audio(
+                    adjusted_y,
+                    preview_sr,
+                    target_bpm=phonk_target_bpm,
+                    pitch_down_semitones=phonk_pitch_down,
+                    cowbell_gain=phonk_cowbell_gain,
+                    distortion_drive_db=phonk_distortion_db,
+                    bass_boost_db=phonk_bass_boost_db,
+                )
+
+            adjusted_duration = len(adjusted_y) / preview_sr
+            st.write(
+                f"Audio duration with {playback_speed:.2f}x speed: {adjusted_duration:.2f} seconds"
             )
-        if reverb_amount > 0:
-            adjusted_y = apply_reverb(adjusted_y, preview_sr, reverb_amount)
-        if phonk_enabled:
-            adjusted_y = make_brazilian_phonk_audio(
-                adjusted_y,
-                preview_sr,
-                target_bpm=phonk_target_bpm,
-                pitch_down_semitones=phonk_pitch_down,
-                cowbell_gain=phonk_cowbell_gain,
-                distortion_drive_db=phonk_distortion_db,
-                bass_boost_db=phonk_bass_boost_db,
+
+            preview_audio_bytes = audio_array_to_wav_bytes(adjusted_y, preview_sr)
+            st.audio(preview_audio_bytes, format="audio/wav")
+            st.caption("Listen to the adjusted speed before rendering your video.")
+
+            time_axis = np.linspace(0, adjusted_duration, len(adjusted_y))
+            fig, ax = plt.subplots(figsize=(10, 3))
+            ax.plot(time_axis, adjusted_y, color="#4f8bf9", linewidth=0.8)
+            ax.set_title("Waveform preview")
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Amplitude")
+            ax.set_xlim(0, adjusted_duration)
+            ax.set_ylim(-1.05, 1.05)
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig, use_container_width=True)
+            st.caption(
+                "Use the Matplotlib zoom and pan controls (upper-right toolbar) "
+                "to inspect the waveform before choosing your final start and end times."
             )
 
-        adjusted_duration = len(adjusted_y) / preview_sr
-        st.write(
-            f"Audio duration with {playback_speed:.2f}x speed: {adjusted_duration:.2f} seconds"
-        )
+            default_end = float(adjusted_duration)
+            start_time, end_time = st.slider(
+                "Select start and end time (seconds)",
+                min_value=0.0,
+                max_value=float(adjusted_duration),
+                value=(0.0, default_end),
+                step=0.1,
+            )
+            st.caption(
+                "The visualizer will render only the selected section."
+                " Max duration above still applies if it is greater than 0."
+            )
 
-        preview_audio_bytes = audio_array_to_wav_bytes(adjusted_y, preview_sr)
-        st.audio(preview_audio_bytes, format="audio/wav")
-        st.caption("Listen to the adjusted speed before rendering your video.")
-
-        time_axis = np.linspace(0, adjusted_duration, len(adjusted_y))
-        fig, ax = plt.subplots(figsize=(10, 3))
-        ax.plot(time_axis, adjusted_y, color="#4f8bf9", linewidth=0.8)
-        ax.set_title("Waveform preview")
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Amplitude")
-        ax.set_xlim(0, adjusted_duration)
-        ax.set_ylim(-1.05, 1.05)
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig, use_container_width=True)
-        st.caption(
-            "Use the Matplotlib zoom and pan controls (upper-right toolbar) "
-            "to inspect the waveform before choosing your final start and end times."
-        )
-
-        default_end = float(adjusted_duration)
-        start_time, end_time = st.slider(
-            "Select start and end time (seconds)",
-            min_value=0.0,
-            max_value=float(adjusted_duration),
-            value=(0.0, default_end),
-            step=0.1,
-        )
-        st.caption(
-            "The visualizer will render only the selected section."
-            " Max duration above still applies if it is greater than 0."
-        )
-
-        if start_time == end_time:
-            st.warning("Choose a range longer than 0 seconds for rendering.")
+            if start_time == end_time:
+                st.warning("Choose a range longer than 0 seconds for rendering.")
 
 render_button = st.button("Render MP4")
 
