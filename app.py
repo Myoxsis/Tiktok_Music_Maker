@@ -79,6 +79,25 @@ def apply_bass_boost(y, sr, boost_db, cutoff=150.0):
     return boosted.astype(y.dtype, copy=False)
 
 
+def apply_reverb(y, sr, mix, delay_ms=80.0, decay=0.45, echoes=5):
+    """Simple Schroeder-style reverb made from a stack of echoes."""
+    if mix <= 0.0:
+        return y
+
+    delay = max(1, int(sr * (delay_ms / 1000.0)))
+    impulse_length = delay * echoes + 1
+    impulse = np.zeros(impulse_length, dtype=np.float32)
+    for i in range(echoes):
+        impulse[i * delay] = decay ** i
+
+    wet = np.convolve(y, impulse, mode="full")[: len(y)]
+    wet /= max(1e-6, np.max(np.abs(wet)))
+
+    mixed = (1.0 - mix) * y + mix * wet
+    mixed = np.clip(mixed, -1.0, 1.0)
+    return mixed.astype(y.dtype, copy=False)
+
+
 def audio_array_to_wav_bytes(y, sr):
     """Serialize a mono waveform to WAV bytes."""
     buffer = io.BytesIO()
@@ -165,7 +184,9 @@ def get_band_style(index, value, total_bands, min_width=2, max_width=10):
     return (r, g, b), max(1, int(width)), max(10, min(255, glow_alpha))
 
 
-def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64):
+def draw_circular_spectrum_frame(
+    t, y, sr, beat_times, reverb_amount=0.0, n_bands=64
+):
     """
     Circular spectrum visual. If reverb=True, draws an extra ring pulse on beats.
     """
@@ -200,9 +221,10 @@ def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64)
         glow_draw.line((x1, y1, x2, y2), width=glow_width, fill=glow_color)
 
     # "Reverb" ring pulse on strong beats
-    if reverb and beat > 0.0:
+    if reverb_amount > 0.0 and beat > 0.0:
         ring_radius = base_radius + max_extra * 1.1
-        thickness = int(6 + 20 * beat)
+        thickness = int(2 + (20 * beat * reverb_amount))
+        thickness = max(thickness, 2)
 
         x1 = CENTER[0] - ring_radius
         y1 = CENTER[1] - ring_radius
@@ -219,7 +241,7 @@ def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64)
     return np.array(img)
 
 
-def draw_bar_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=32):
+def draw_bar_spectrum_frame(t, y, sr, beat_times, reverb_amount=0.0, n_bands=32):
     """
     Bar spectrum visual. If reverb=True, adds a faint echo above the bars on beats.
     """
@@ -245,8 +267,8 @@ def draw_bar_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=32):
         draw.rectangle([x1, y1, x2, y2], fill=(255, 255, 255))
 
         # "Reverb" echo bar slightly above the main one on strong beats
-        if reverb and beat > 0.0:
-            echo_height = int(height * (0.3 + 0.5 * beat))
+        if reverb_amount > 0.0 and beat > 0.0:
+            echo_height = int(height * (0.1 + 0.6 * beat * reverb_amount))
             echo_y2 = y1 - 10
             echo_y1 = max(echo_y2 - echo_height, 0)
             draw.rectangle([x1, echo_y1, x2, echo_y2], fill=(180, 180, 255))
@@ -262,7 +284,7 @@ def render_mp4(
     template="circular",
     fps=30,
     max_duration=None,
-    reverb=False,
+    reverb_amount=0.0,
     start_time=0.0,
     end_time=None,
 ):
@@ -315,18 +337,26 @@ def render_mp4(
     # Initial frame
     t0 = times[0]
     if template == "circular":
-        frame0 = draw_circular_spectrum_frame(t0, y, sr, beat_times, reverb=reverb)
+        frame0 = draw_circular_spectrum_frame(
+            t0, y, sr, beat_times, reverb_amount=reverb_amount
+        )
     else:
-        frame0 = draw_bar_spectrum_frame(t0, y, sr, beat_times, reverb=reverb)
+        frame0 = draw_bar_spectrum_frame(
+            t0, y, sr, beat_times, reverb_amount=reverb_amount
+        )
 
     im = ax.imshow(frame0, animated=True)
 
     def update(i):
         t = times[i]
         if template == "circular":
-            frame = draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=reverb)
+            frame = draw_circular_spectrum_frame(
+                t, y, sr, beat_times, reverb_amount=reverb_amount
+            )
         else:
-            frame = draw_bar_spectrum_frame(t, y, sr, beat_times, reverb=reverb)
+            frame = draw_bar_spectrum_frame(
+                t, y, sr, beat_times, reverb_amount=reverb_amount
+            )
         im.set_array(frame)
         return [im]
 
@@ -402,7 +432,14 @@ with col1:
 with col2:
     fps = st.slider("FPS", 10, 60, FPS_DEFAULT)
 
-reverb_enabled = st.checkbox("Enable beat reverb effect", value=True)
+reverb_amount = st.slider(
+    "Reverb amount",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.0,
+    step=0.05,
+    help="Blend in a synthetic echo. Move the slider to instantly update the preview audio and visuals.",
+)
 
 playback_speed = st.slider(
     "Playback speed",
@@ -446,6 +483,9 @@ if uploaded_file is not None:
         adjusted_y = apply_speed_change(preview_y, playback_speed)
         if bass_boost_db > 0:
             adjusted_y = apply_bass_boost(adjusted_y, preview_sr, bass_boost_db)
+        if reverb_amount > 0:
+            adjusted_y = apply_reverb(adjusted_y, preview_sr, reverb_amount)
+
         adjusted_duration = len(adjusted_y) / preview_sr
         st.write(
             f"Audio duration with {playback_speed:.2f}x speed: {adjusted_duration:.2f} seconds"
@@ -535,7 +575,9 @@ if render_button:
             template_key = "circular" if "Circular" in template_choice else "bars"
             max_d = max_duration if max_duration > 0 else None
 
-            needs_processing = playback_speed != 1.0 or bass_boost_db > 0
+            needs_processing = (
+                playback_speed != 1.0 or bass_boost_db > 0 or reverb_amount > 0
+            )
 
             if needs_processing:
                 y_full, sr_full = librosa.load(audio_path, sr=None, mono=True)
@@ -543,6 +585,8 @@ if render_button:
                     y_full = apply_speed_change(y_full, playback_speed)
                 if bass_boost_db > 0:
                     y_full = apply_bass_boost(y_full, sr_full, bass_boost_db)
+                if reverb_amount > 0:
+                    y_full = apply_reverb(y_full, sr_full, reverb_amount)
 
                 temp_processed = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
                 temp_processed.close()
@@ -557,7 +601,7 @@ if render_button:
                 template=template_key,
                 fps=int(fps),
                 max_duration=max_d,
-                reverb=reverb_enabled,
+                reverb_amount=reverb_amount,
                 start_time=float(start_time),
                 end_time=float(end_time),
             )
