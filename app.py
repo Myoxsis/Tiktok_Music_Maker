@@ -46,6 +46,38 @@ def apply_speed_change(y, rate):
     return librosa.effects.time_stretch(y, rate=rate)
 
 
+def lowpass_filter(y, sr, cutoff=150.0, numtaps=101):
+    """Simple windowed-sinc low-pass filter used for bass isolation."""
+    if cutoff <= 0 or sr <= 0 or cutoff >= sr / 2:
+        return y
+
+    taps = max(3, int(numtaps))
+    if taps % 2 == 0:
+        taps += 1  # ensure odd number of taps for symmetry
+
+    n = np.arange(taps) - (taps - 1) / 2
+    normalized_cutoff = cutoff / sr
+    h = 2 * normalized_cutoff * np.sinc(2 * normalized_cutoff * n)
+    window = np.hamming(taps)
+    h *= window
+    h /= np.sum(h)
+
+    filtered = np.convolve(y, h, mode="same")
+    return filtered.astype(y.dtype, copy=False)
+
+
+def apply_bass_boost(y, sr, boost_db, cutoff=150.0):
+    """Boost low-frequency content by `boost_db` decibels."""
+    if boost_db <= 0:
+        return y
+
+    low_freq = lowpass_filter(y, sr, cutoff=cutoff)
+    gain = 10 ** (boost_db / 20.0)
+    boosted = y + (gain - 1.0) * low_freq
+    boosted = np.clip(boosted, -1.0, 1.0)
+    return boosted.astype(y.dtype, copy=False)
+
+
 def audio_array_to_wav_bytes(y, sr):
     """Serialize a mono waveform to WAV bytes."""
     buffer = io.BytesIO()
@@ -380,6 +412,15 @@ playback_speed = st.slider(
     help="Adjust how fast the audio should play in the preview and rendered video.",
 )
 
+bass_boost_db = st.slider(
+    "Bass boost (dB)",
+    min_value=0.0,
+    max_value=12.0,
+    value=0.0,
+    step=0.5,
+    help="Increase low-frequency energy before previewing or rendering.",
+)
+
 max_duration = st.number_input(
     "Max duration (seconds, 0 = full track)",
     min_value=0.0,
@@ -402,6 +443,8 @@ if uploaded_file is not None:
         st.warning("Uploaded audio appears to be empty.")
     else:
         adjusted_y = apply_speed_change(preview_y, playback_speed)
+        if bass_boost_db > 0:
+            adjusted_y = apply_bass_boost(adjusted_y, preview_sr, bass_boost_db)
         adjusted_duration = len(adjusted_y) / preview_sr
         st.write(
             f"Audio duration with {playback_speed:.2f}x speed: {adjusted_duration:.2f} seconds"
@@ -466,12 +509,18 @@ if render_button:
             template_key = "circular" if "Circular" in template_choice else "bars"
             max_d = max_duration if max_duration > 0 else None
 
-            if playback_speed != 1.0:
+            needs_processing = playback_speed != 1.0 or bass_boost_db > 0
+
+            if needs_processing:
                 y_full, sr_full = librosa.load(audio_path, sr=None, mono=True)
-                stretched_y = apply_speed_change(y_full, playback_speed)
+                if playback_speed != 1.0:
+                    y_full = apply_speed_change(y_full, playback_speed)
+                if bass_boost_db > 0:
+                    y_full = apply_bass_boost(y_full, sr_full, bass_boost_db)
+
                 temp_processed = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
                 temp_processed.close()
-                sf.write(temp_processed.name, stretched_y, sr_full, format="WAV")
+                sf.write(temp_processed.name, y_full, sr_full, format="WAV")
                 processed_audio_path = temp_processed.name
             else:
                 processed_audio_path = audio_path
