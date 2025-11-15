@@ -368,6 +368,40 @@ CENTER = (W // 2, H // 2)
 BAND_COLORMAP = cm.get_cmap("plasma")
 
 
+_BACKGROUND_CACHE = {}
+
+
+def get_gradient_background(
+    size,
+    top_color=(8, 3, 30),
+    bottom_color=(5, 45, 80),
+):
+    """Return (and cache) a subtle vertical gradient background."""
+
+    key = (size, top_color, bottom_color)
+    cached = _BACKGROUND_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    width, height = size
+    gradient = Image.new("RGB", size)
+    grad_draw = ImageDraw.Draw(gradient)
+
+    if height <= 1:
+        grad_draw.rectangle([0, 0, width, height], fill=top_color)
+    else:
+        for y in range(height):
+            ratio = y / (height - 1)
+            color = tuple(
+                int(top * (1 - ratio) + bottom * ratio)
+                for top, bottom in zip(top_color, bottom_color)
+            )
+            grad_draw.line((0, y, width, y), fill=color)
+
+    _BACKGROUND_CACHE[key] = gradient
+    return gradient
+
+
 def get_band_style(index, value, total_bands, min_width=2, max_width=10):
     """Return (color, width, glow_alpha) for a spectral band."""
     if total_bands <= 1:
@@ -390,23 +424,24 @@ def get_band_style(index, value, total_bands, min_width=2, max_width=10):
 def draw_circular_spectrum_frame(
     t, y, sr, beat_times, reverb_amount=0.0, n_bands=64
 ):
-    """
-    Circular spectrum visual. If reverb=True, draws an extra ring pulse on beats.
-    """
+    """Circular spectrum with mirrored bands, gradient background, and glow."""
+
     bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+    mirrored_bands = np.concatenate([bands, bands[::-1]])
     beat = beat_intensity(t, beat_times)
 
-    img = Image.new("RGB", (W, H), (5, 5, 15))  # dark background
+    img = get_gradient_background((W, H)).copy()
     draw = ImageDraw.Draw(img)
     glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow_layer)
+    pulse_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    pulse_draw = ImageDraw.Draw(pulse_layer)
 
-    # Slightly reduce the radii so the spectrum feels "dezoomed"
-    base_radius = 270
-    max_extra = 220 * (1 + 0.5 * beat)
+    base_radius = 250
+    max_extra = 240 * (1 + 0.5 * beat)
 
-    n = len(bands)
-    for i, v in enumerate(bands):
+    n = len(mirrored_bands)
+    for i, v in enumerate(mirrored_bands):
         angle = 2 * math.pi * i / n
         extra = float(v) * max_extra
         r1 = base_radius
@@ -424,25 +459,53 @@ def draw_circular_spectrum_frame(
         glow_color = (*color, glow_alpha)
         glow_draw.line((x1, y1, x2, y2), width=glow_width, fill=glow_color)
 
+    # Pulsating centerpiece keeps the visual lively
+    core_radius = 120 + 50 * beat
+    core_color = (80 + int(120 * beat), 30 + int(80 * beat), 160, 180)
+    pulse_draw.ellipse(
+        (
+            CENTER[0] - core_radius,
+            CENTER[1] - core_radius,
+            CENTER[0] + core_radius,
+            CENTER[1] + core_radius,
+        ),
+        fill=core_color,
+    )
+
+    for idx, scale in enumerate([1.0, 1.15, 1.3]):
+        r = core_radius * scale + 25 * beat
+        outline_alpha = max(30, int(90 - idx * 20 + 80 * beat))
+        outline_color = (200, 120 + idx * 20, 255, outline_alpha)
+        pulse_draw.ellipse(
+            (
+                CENTER[0] - r,
+                CENTER[1] - r,
+                CENTER[0] + r,
+                CENTER[1] + r,
+            ),
+            outline=outline_color,
+            width=4,
+        )
+
     # "Reverb" ring pulse on strong beats
     if reverb_amount > 0.0 and beat > 0.0:
         ring_radius = base_radius + max_extra * 1.1
-        thickness = int(2 + (20 * beat * reverb_amount))
-        thickness = max(thickness, 2)
-
-        x1 = CENTER[0] - ring_radius
-        y1 = CENTER[1] - ring_radius
-        x2 = CENTER[0] + ring_radius
-        y2 = CENTER[1] + ring_radius
-
-        draw.ellipse(
-            (x1, y1, x2, y2),
-            outline=(200, 200, 255),
+        thickness = max(2, int(2 + (20 * beat * reverb_amount)))
+        ring_color = (220, 220, 255, int(80 + 120 * beat * reverb_amount))
+        pulse_draw.ellipse(
+            (
+                CENTER[0] - ring_radius,
+                CENTER[1] - ring_radius,
+                CENTER[0] + ring_radius,
+                CENTER[1] + ring_radius,
+            ),
+            outline=ring_color,
             width=thickness,
         )
 
-    img = Image.alpha_composite(img.convert("RGBA"), glow_layer).convert("RGB")
-    return np.array(img)
+    composed = Image.alpha_composite(img.convert("RGBA"), glow_layer)
+    composed = Image.alpha_composite(composed, pulse_layer).convert("RGB")
+    return np.array(composed)
 
 
 def draw_bar_spectrum_frame(t, y, sr, beat_times, reverb_amount=0.0, n_bands=32):
