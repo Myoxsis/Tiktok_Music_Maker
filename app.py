@@ -10,6 +10,7 @@ import streamlit as st
 import librosa
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib import cm
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 
 # Use a non-interactive backend (important when running under Streamlit)
@@ -89,6 +90,26 @@ def get_spectrum_at_time(y, sr, t, n_fft=2048, n_bands=32):
 # ---------- VISUAL TEMPLATES ----------
 
 CENTER = (W // 2, H // 2)
+BAND_COLORMAP = cm.get_cmap("plasma")
+
+
+def get_band_style(index, value, total_bands, min_width=2, max_width=10):
+    """Return (color, width, glow_alpha) for a spectral band."""
+    if total_bands <= 1:
+        normalized_index = 0.0
+    else:
+        normalized_index = index / (total_bands - 1)
+
+    base_color = BAND_COLORMAP(normalized_index)  # RGBA 0..1 values
+    brightness = 0.4 + 0.6 * float(value)
+    r, g, b = [
+        int(255 * min(1.0, channel * brightness))
+        for channel in base_color[:3]
+    ]
+
+    width = min_width + (max_width - min_width) * float(value)
+    glow_alpha = int(60 + 150 * float(value))
+    return (r, g, b), max(1, int(width)), max(10, min(255, glow_alpha))
 
 
 def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64):
@@ -100,6 +121,8 @@ def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64)
 
     img = Image.new("RGB", (W, H), (5, 5, 15))  # dark background
     draw = ImageDraw.Draw(img)
+    glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow_layer)
 
     base_radius = 320
     max_extra = 260 * (1 + 0.5 * beat)
@@ -116,7 +139,12 @@ def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64)
         x2 = CENTER[0] + r2 * math.cos(angle)
         y2 = CENTER[1] + r2 * math.sin(angle)
 
-        draw.line((x1, y1, x2, y2), width=4, fill=(255, 255, 255))
+        color, width, glow_alpha = get_band_style(i, v, n)
+        draw.line((x1, y1, x2, y2), width=width, fill=color)
+
+        glow_width = max(width + 2, int(width * 1.8))
+        glow_color = (*color, glow_alpha)
+        glow_draw.line((x1, y1, x2, y2), width=glow_width, fill=glow_color)
 
     # "Reverb" ring pulse on strong beats
     if reverb and beat > 0.0:
@@ -134,6 +162,7 @@ def draw_circular_spectrum_frame(t, y, sr, beat_times, reverb=False, n_bands=64)
             width=thickness,
         )
 
+    img = Image.alpha_composite(img.convert("RGBA"), glow_layer).convert("RGB")
     return np.array(img)
 
 
