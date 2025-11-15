@@ -15,6 +15,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.animation import FuncAnimation, FFMpegWriter
+from scipy.signal import butter, filtfilt
 
 # Use a non-interactive backend (important when running under Streamlit)
 matplotlib.use("Agg")
@@ -161,6 +162,143 @@ def apply_reverb(y, sr, mix, delay_ms=80.0, decay=0.45, echoes=5):
     mixed = (1.0 - mix) * y + mix * wet
     mixed = np.clip(mixed, -1.0, 1.0)
     return mixed.astype(y.dtype, copy=False)
+
+
+def detect_bpm(y, sr):
+    """Estimate BPM for a mono signal."""
+    if y.size == 0:
+        return 0.0
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    return float(tempo)
+
+
+def time_stretch_to_bpm(y, sr, target_bpm):
+    """Stretch the input so its tempo approaches ``target_bpm``."""
+    original_bpm = detect_bpm(y, sr)
+    if original_bpm <= 0:
+        return y
+    rate = target_bpm / original_bpm
+    if rate <= 0:
+        return y
+    return librosa.effects.time_stretch(y, rate=rate)
+
+
+def pitch_shift(y, sr, semitones):
+    """Pitch-shift the audio by the given number of semitones."""
+    if abs(semitones) < 1e-6:
+        return y
+    return librosa.effects.pitch_shift(y, sr=sr, n_steps=semitones)
+
+
+def synth_cowbell(sr, duration=0.15):
+    """Generate a short metallic cowbell-like hit."""
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    freqs = [800.0, 1200.0, 1600.0]
+    signal = np.zeros_like(t)
+    for f in freqs:
+        signal += np.sin(2 * math.pi * f * t)
+    env = np.exp(-t * 25.0)
+    signal *= env
+    signal = np.tanh(2.0 * signal)
+    peak = np.max(np.abs(signal)) + 1e-9
+    return (signal / peak).astype(np.float32)
+
+
+def make_cowbell_track(length_samples, sr, bpm, gain):
+    """Create a repeating cowbell pattern aligned to the detected BPM."""
+    if length_samples == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    cb = synth_cowbell(sr)
+    cb_len = len(cb)
+    output = np.zeros(length_samples, dtype=np.float32)
+
+    beat_dur = 60.0 / max(1e-6, bpm)
+    pattern_beats = [0.0, 1.5, 2.0, 3.5]
+    bar_duration = beat_dur * 4
+    total_duration = length_samples / sr
+
+    t = 0.0
+    while t < total_duration:
+        for pb in pattern_beats:
+            hit_time = t + pb * beat_dur
+            if hit_time >= total_duration:
+                break
+            idx = int(hit_time * sr)
+            end = min(idx + cb_len, length_samples)
+            if idx < 0 or idx >= length_samples:
+                continue
+            length_here = end - idx
+            output[idx:end] += gain * cb[:length_here]
+        t += bar_duration
+
+    peak = np.max(np.abs(output)) + 1e-9
+    if peak > 1.0:
+        output /= peak
+    return output
+
+
+def soft_distortion(x, drive_db):
+    """Apply tanh-based soft clipping."""
+    if abs(drive_db) < 1e-6:
+        return x
+    drive = 10 ** (drive_db / 20.0)
+    y = np.tanh(x * drive)
+    peak = np.max(np.abs(y)) + 1e-9
+    return (y / peak).astype(np.float32)
+
+
+def low_shelf_eq(y, sr, cutoff_hz=200.0, gain_db=3.0, order=4):
+    """Very simple low-shelf style boost via low-pass blending."""
+    if abs(gain_db) < 1e-6:
+        return y
+
+    nyq = 0.5 * sr
+    if nyq <= 0:
+        return y
+    norm_cutoff = min(max(cutoff_hz / nyq, 0.0), 0.999)
+    b, a = butter(order, norm_cutoff, btype="low")
+    y_lp = filtfilt(b, a, y).astype(np.float32)
+    g = 10 ** (gain_db / 20.0)
+    y_out = y + (g - 1.0) * y_lp
+    peak = np.max(np.abs(y_out)) + 1e-9
+    if peak > 1.0:
+        y_out /= peak
+    return y_out.astype(np.float32)
+
+
+def make_brazilian_phonk_audio(
+    y,
+    sr,
+    target_bpm=170.0,
+    pitch_down_semitones=-4.0,
+    cowbell_gain=0.7,
+    distortion_drive_db=6.0,
+    bass_boost_db=3.0,
+):
+    """Remix the audio using a simplified Brazilian phonk recipe."""
+    if y.size == 0:
+        return y
+
+    y_work = y.astype(np.float32, copy=True)
+    y_work = time_stretch_to_bpm(y_work, sr, target_bpm)
+    y_work = pitch_shift(y_work, sr, pitch_down_semitones)
+
+    cow = make_cowbell_track(len(y_work), sr, bpm=target_bpm, gain=cowbell_gain)
+    mix = y_work + cow
+    peak = np.max(np.abs(mix)) + 1e-9
+    if peak > 1.0:
+        mix /= peak
+
+    if abs(bass_boost_db) > 1e-6:
+        mix = low_shelf_eq(mix, sr, cutoff_hz=200.0, gain_db=bass_boost_db)
+    if abs(distortion_drive_db) > 1e-6:
+        mix = soft_distortion(mix, distortion_drive_db)
+
+    peak = np.max(np.abs(mix)) + 1e-9
+    if peak > 0.99:
+        mix = mix / peak * 0.99
+    return mix.astype(np.float32, copy=False)
 
 
 def audio_array_to_wav_bytes(y, sr):
@@ -534,6 +672,60 @@ level2a_amount = st.slider(
     help="Analog-style, multi-stage bass enhancer. Blend amounts above 0.4 deliver the signature punch.",
 )
 
+phonk_enabled = st.checkbox(
+    "Enable Brazilian phonk remix",
+    value=False,
+    help="Applies BPM-matched time-stretching, -4 semitone pitch drop, cowbell hits, bass boost, and light distortion.",
+)
+
+phonk_target_bpm = 170.0
+phonk_pitch_down = -4.0
+phonk_cowbell_gain = 0.7
+phonk_distortion_db = 6.0
+phonk_bass_boost_db = 3.0
+
+if phonk_enabled:
+    phonk_target_bpm = st.slider(
+        "Phonk target BPM",
+        min_value=120.0,
+        max_value=220.0,
+        value=170.0,
+        step=1.0,
+        help="Detected tempo is stretched to this BPM before remixing.",
+    )
+    phonk_pitch_down = st.slider(
+        "Pitch shift (semitones)",
+        min_value=-12.0,
+        max_value=0.0,
+        value=-4.0,
+        step=0.5,
+        help="Negative values drop the track for that darker phonk vibe.",
+    )
+    phonk_cowbell_gain = st.slider(
+        "Cowbell gain",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.7,
+        step=0.05,
+        help="Controls the level of the synthetic cowbell loop.",
+    )
+    phonk_distortion_db = st.slider(
+        "Distortion drive (dB)",
+        min_value=0.0,
+        max_value=18.0,
+        value=6.0,
+        step=0.5,
+        help="Adds tanh-based saturation after the remixing stage.",
+    )
+    phonk_bass_boost_db = st.slider(
+        "Phonk bass boost (dB)",
+        min_value=0.0,
+        max_value=12.0,
+        value=3.0,
+        step=0.5,
+        help="Low-shelf emphasis applied inside the phonk chain.",
+    )
+
 max_duration = st.number_input(
     "Max duration (seconds, 0 = full track)",
     min_value=0.0,
@@ -564,6 +756,16 @@ if uploaded_file is not None:
             )
         if reverb_amount > 0:
             adjusted_y = apply_reverb(adjusted_y, preview_sr, reverb_amount)
+        if phonk_enabled:
+            adjusted_y = make_brazilian_phonk_audio(
+                adjusted_y,
+                preview_sr,
+                target_bpm=phonk_target_bpm,
+                pitch_down_semitones=phonk_pitch_down,
+                cowbell_gain=phonk_cowbell_gain,
+                distortion_drive_db=phonk_distortion_db,
+                bass_boost_db=phonk_bass_boost_db,
+            )
 
         adjusted_duration = len(adjusted_y) / preview_sr
         st.write(
@@ -640,6 +842,7 @@ if render_button:
                 or bass_boost_db > 0
                 or level2a_amount > 0
                 or reverb_amount > 0
+                or phonk_enabled
             )
 
             if needs_processing:
@@ -654,6 +857,16 @@ if render_button:
                     )
                 if reverb_amount > 0:
                     y_full = apply_reverb(y_full, sr_full, reverb_amount)
+                if phonk_enabled:
+                    y_full = make_brazilian_phonk_audio(
+                        y_full,
+                        sr_full,
+                        target_bpm=phonk_target_bpm,
+                        pitch_down_semitones=phonk_pitch_down,
+                        cowbell_gain=phonk_cowbell_gain,
+                        distortion_drive_db=phonk_distortion_db,
+                        bass_boost_db=phonk_bass_boost_db,
+                    )
 
                 temp_processed = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
                 temp_processed.close()
