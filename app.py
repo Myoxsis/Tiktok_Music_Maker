@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 import math
@@ -5,6 +6,7 @@ import subprocess
 
 import numpy as np
 from PIL import Image, ImageDraw
+import soundfile as sf
 
 import streamlit as st
 import librosa
@@ -32,6 +34,23 @@ def analyze_audio(audio_path):
     tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
     beat_times = librosa.frames_to_time(beat_frames, sr=sr)
     return y, sr, beat_times
+
+
+def apply_speed_change(y, rate):
+    """Return audio samples stretched/compressed by `rate`."""
+    if rate == 1.0:
+        return y
+    if rate <= 0:
+        raise ValueError("Playback speed must be greater than 0.")
+    return librosa.effects.time_stretch(y, rate=rate)
+
+
+def audio_array_to_wav_bytes(y, sr):
+    """Serialize a mono waveform to WAV bytes."""
+    buffer = io.BytesIO()
+    sf.write(buffer, y, sr, format="WAV")
+    buffer.seek(0)
+    return buffer.read()
 
 
 def beat_intensity(t, beat_times, window=0.06):
@@ -351,6 +370,15 @@ with col2:
 
 reverb_enabled = st.checkbox("Enable beat reverb effect", value=True)
 
+playback_speed = st.slider(
+    "Playback speed",
+    min_value=0.5,
+    max_value=1.5,
+    value=1.0,
+    step=0.05,
+    help="Adjust how fast the audio should play in the preview and rendered video.",
+)
+
 max_duration = st.number_input(
     "Max duration (seconds, 0 = full track)",
     min_value=0.0,
@@ -372,23 +400,30 @@ if uploaded_file is not None:
     if total_preview_samples == 0:
         st.warning("Uploaded audio appears to be empty.")
     else:
-        audio_duration = total_preview_samples / preview_sr
-        st.write(f"Audio duration: {audio_duration:.2f} seconds")
+        adjusted_y = apply_speed_change(preview_y, playback_speed)
+        adjusted_duration = len(adjusted_y) / preview_sr
+        st.write(
+            f"Audio duration with {playback_speed:.2f}x speed: {adjusted_duration:.2f} seconds"
+        )
 
-        time_axis = np.linspace(0, audio_duration, total_preview_samples)
+        preview_audio_bytes = audio_array_to_wav_bytes(adjusted_y, preview_sr)
+        st.audio(preview_audio_bytes, format="audio/wav")
+        st.caption("Listen to the adjusted speed before rendering your video.")
+
+        time_axis = np.linspace(0, adjusted_duration, len(adjusted_y))
         fig, ax = plt.subplots(figsize=(10, 3))
-        ax.plot(time_axis, preview_y, linewidth=0.6, color="#4f8bf9")
-        ax.set_xlim(0, audio_duration)
+        ax.plot(time_axis, adjusted_y, linewidth=0.6, color="#4f8bf9")
+        ax.set_xlim(0, adjusted_duration)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Amplitude")
         ax.set_title("Waveform preview")
         st.pyplot(fig)
 
-        default_end = float(audio_duration)
+        default_end = float(adjusted_duration)
         start_time, end_time = st.slider(
             "Select start and end time (seconds)",
             min_value=0.0,
-            max_value=float(audio_duration),
+            max_value=float(adjusted_duration),
             value=(0.0, default_end),
             step=0.1,
         )
@@ -419,13 +454,25 @@ if render_button:
         st.write("Rendering... longer duration and higher FPS will take more time.")
         progress = st.progress(0)
 
+        processed_audio_path = None
+
         try:
             progress.progress(10)
             template_key = "circular" if "Circular" in template_choice else "bars"
             max_d = max_duration if max_duration > 0 else None
 
+            if playback_speed != 1.0:
+                y_full, sr_full = librosa.load(audio_path, sr=None, mono=True)
+                stretched_y = apply_speed_change(y_full, playback_speed)
+                temp_processed = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+                temp_processed.close()
+                sf.write(temp_processed.name, stretched_y, sr_full, format="WAV")
+                processed_audio_path = temp_processed.name
+            else:
+                processed_audio_path = audio_path
+
             render_mp4(
-                audio_path=audio_path,
+                audio_path=processed_audio_path,
                 output_path=output_path,
                 template=template_key,
                 fps=int(fps),
@@ -457,3 +504,5 @@ if render_button:
             st.error(f"Error during rendering: {e}")
         finally:
             progress.empty()
+            if processed_audio_path and processed_audio_path != audio_path:
+                os.remove(processed_audio_path)
