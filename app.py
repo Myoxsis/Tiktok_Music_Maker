@@ -424,13 +424,13 @@ def get_band_style(index, value, total_bands, min_width=2, max_width=10):
 def draw_circular_spectrum_frame(
     t, y, sr, beat_times, reverb_amount=0.0, n_bands=64
 ):
-    """Circular spectrum with mirrored bands, gradient background, and glow."""
+    """Circular spectrum with mirrored bands, black background, and glow."""
 
     bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
     mirrored_bands = np.concatenate([bands, bands[::-1]])
     beat = beat_intensity(t, beat_times)
 
-    img = get_gradient_background((W, H)).copy()
+    img = Image.new("RGB", (W, H), (0, 0, 0))
     draw = ImageDraw.Draw(img)
     glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow_layer)
@@ -444,8 +444,9 @@ def draw_circular_spectrum_frame(
     for i, v in enumerate(mirrored_bands):
         angle = 2 * math.pi * i / n
         extra = float(v) * max_extra
-        r1 = base_radius
-        r2 = base_radius + extra
+        half_extra = extra * 0.5
+        r1 = max(0.0, base_radius - half_extra)
+        r2 = base_radius + half_extra
 
         x1 = CENTER[0] + r1 * math.cos(angle)
         y1 = CENTER[1] + r1 * math.sin(angle)
@@ -458,34 +459,6 @@ def draw_circular_spectrum_frame(
         glow_width = max(width + 2, int(width * 1.8))
         glow_color = (*color, glow_alpha)
         glow_draw.line((x1, y1, x2, y2), width=glow_width, fill=glow_color)
-
-    # Pulsating centerpiece keeps the visual lively
-    core_radius = 120 + 50 * beat
-    core_color = (80 + int(120 * beat), 30 + int(80 * beat), 160, 180)
-    pulse_draw.ellipse(
-        (
-            CENTER[0] - core_radius,
-            CENTER[1] - core_radius,
-            CENTER[0] + core_radius,
-            CENTER[1] + core_radius,
-        ),
-        fill=core_color,
-    )
-
-    for idx, scale in enumerate([1.0, 1.15, 1.3]):
-        r = core_radius * scale + 25 * beat
-        outline_alpha = max(30, int(90 - idx * 20 + 80 * beat))
-        outline_color = (200, 120 + idx * 20, 255, outline_alpha)
-        pulse_draw.ellipse(
-            (
-                CENTER[0] - r,
-                CENTER[1] - r,
-                CENTER[0] + r,
-                CENTER[1] + r,
-            ),
-            outline=outline_color,
-            width=4,
-        )
 
     # "Reverb" ring pulse on strong beats
     if reverb_amount > 0.0 and beat > 0.0:
