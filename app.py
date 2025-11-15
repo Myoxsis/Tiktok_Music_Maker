@@ -263,8 +263,9 @@ def draw_circular_spectrum_frame(
     glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow_layer)
 
-    base_radius = 320
-    max_extra = 260 * (1 + 0.5 * beat)
+    # Slightly reduce the radii so the spectrum feels "dezoomed"
+    base_radius = 270
+    max_extra = 220 * (1 + 0.5 * beat)
 
     n = len(bands)
     for i, v in enumerate(bands):
