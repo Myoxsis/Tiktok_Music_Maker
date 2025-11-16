@@ -440,18 +440,34 @@ def draw_circular_spectrum_frame(
     base_radius = 250
     max_extra = 240 * (1 + 0.5 * beat)
 
+    # Pre-draw the minimal circle so it is always visible behind the spectrum bars.
+    circle_color = (30, 30, 50)
+    circle_thickness = 4
+    draw.ellipse(
+        (
+            CENTER[0] - base_radius,
+            CENTER[1] - base_radius,
+            CENTER[0] + base_radius,
+            CENTER[1] + base_radius,
+        ),
+        outline=circle_color,
+        width=circle_thickness,
+    )
+
     n = len(mirrored_bands)
+    wave_points = []
     for i, v in enumerate(mirrored_bands):
         angle = 2 * math.pi * i / n
         extra = float(v) * max_extra
-        half_extra = extra * 0.5
-        r1 = max(0.0, base_radius - half_extra)
-        r2 = base_radius + half_extra
+        r1 = base_radius
+        r2 = base_radius + extra
 
         x1 = CENTER[0] + r1 * math.cos(angle)
         y1 = CENTER[1] + r1 * math.sin(angle)
         x2 = CENTER[0] + r2 * math.cos(angle)
         y2 = CENTER[1] + r2 * math.sin(angle)
+
+        wave_points.append((x2, y2))
 
         color, width, glow_alpha = get_band_style(i, v, n)
         draw.line((x1, y1, x2, y2), width=width, fill=color)
@@ -459,6 +475,13 @@ def draw_circular_spectrum_frame(
         glow_width = max(width + 2, int(width * 1.8))
         glow_color = (*color, glow_alpha)
         glow_draw.line((x1, y1, x2, y2), width=glow_width, fill=glow_color)
+
+    # Draw a wavy outline following the tips of the bars to emphasize the
+    # circular spectrum "wave".
+    if len(wave_points) > 2:
+        wave_outline = wave_points + [wave_points[0]]
+        wave_color = (180, 200, 255, 90)
+        glow_draw.line(wave_outline, width=6, fill=wave_color)
 
     # "Reverb" ring pulse on strong beats
     if reverb_amount > 0.0 and beat > 0.0:
