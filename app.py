@@ -6,7 +6,7 @@ import math
 import subprocess
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import soundfile as sf
 
 import streamlit as st
@@ -421,8 +421,47 @@ def get_band_style(index, value, total_bands, min_width=2, max_width=10):
     return (r, g, b), max(1, int(width)), max(10, min(255, glow_alpha))
 
 
+def load_font(size, bold=False):
+    """Return a truetype font if available, otherwise fall back to the default."""
+
+    font_name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    try:
+        return ImageFont.truetype(font_name, size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def draw_text_with_shadow(
+    draw,
+    text,
+    position,
+    font,
+    fill,
+    shadow_color=(0, 0, 0, 180),
+    shadow_offset=(2, 3),
+    anchor="mm",
+):
+    """Draw text with a soft drop shadow for readability."""
+
+    if not text:
+        return
+
+    x, y = position
+    shadow_pos = (x + shadow_offset[0], y + shadow_offset[1])
+    draw.text(shadow_pos, text, font=font, fill=shadow_color, anchor=anchor)
+    draw.text((x, y), text, font=font, fill=fill, anchor=anchor)
+
+
 def draw_circular_spectrum_frame(
-    t, y, sr, beat_times, reverb_amount=0.0, n_bands=64
+    t,
+    y,
+    sr,
+    beat_times,
+    reverb_amount=0.0,
+    n_bands=64,
+    title_text="",
+    artist_text="",
+    hashtags_text="",
 ):
     """Circular spectrum with mirrored bands, black background, and glow."""
 
@@ -503,7 +542,46 @@ def draw_circular_spectrum_frame(
         )
 
     composed = Image.alpha_composite(img.convert("RGBA"), glow_layer)
-    composed = Image.alpha_composite(composed, pulse_layer).convert("RGB")
+    composed = Image.alpha_composite(composed, pulse_layer)
+    text_draw = ImageDraw.Draw(composed)
+
+    safe_inset = 90
+    label_area_top = max(safe_inset, CENTER[1] - base_radius - 140)
+    label_area_bottom = min(H - safe_inset, CENTER[1] + base_radius + 150)
+
+    title_font = load_font(58, bold=True)
+    subtitle_font = load_font(38)
+    hashtag_font = load_font(34)
+
+    if title_text:
+        draw_text_with_shadow(
+            text_draw,
+            title_text,
+            (CENTER[0], label_area_top),
+            font=title_font,
+            fill=(245, 245, 255, 255),
+        )
+
+    if artist_text:
+        artist_y = label_area_top + title_font.size + 12 if title_text else label_area_top
+        draw_text_with_shadow(
+            text_draw,
+            artist_text,
+            (CENTER[0], artist_y),
+            font=subtitle_font,
+            fill=(200, 220, 255, 255),
+        )
+
+    if hashtags_text:
+        draw_text_with_shadow(
+            text_draw,
+            hashtags_text,
+            (CENTER[0], label_area_bottom),
+            font=hashtag_font,
+            fill=(235, 235, 245, 255),
+        )
+
+    composed = composed.convert("RGB")
     return np.array(composed)
 
 
@@ -553,6 +631,9 @@ def render_mp4(
     reverb_amount=0.0,
     start_time=0.0,
     end_time=None,
+    title_text="",
+    artist_text="",
+    hashtags_text="",
 ):
     """
     Render an MP4 video from the given audio file and template,
@@ -604,7 +685,14 @@ def render_mp4(
     t0 = times[0]
     if template == "circular":
         frame0 = draw_circular_spectrum_frame(
-            t0, y, sr, beat_times, reverb_amount=reverb_amount
+            t0,
+            y,
+            sr,
+            beat_times,
+            reverb_amount=reverb_amount,
+            title_text=title_text,
+            artist_text=artist_text,
+            hashtags_text=hashtags_text,
         )
     else:
         frame0 = draw_bar_spectrum_frame(
@@ -617,7 +705,14 @@ def render_mp4(
         t = times[i]
         if template == "circular":
             frame = draw_circular_spectrum_frame(
-                t, y, sr, beat_times, reverb_amount=reverb_amount
+                t,
+                y,
+                sr,
+                beat_times,
+                reverb_amount=reverb_amount,
+                title_text=title_text,
+                artist_text=artist_text,
+                hashtags_text=hashtags_text,
             )
         else:
             frame = draw_bar_spectrum_frame(
@@ -768,6 +863,21 @@ phonk_pitch_down = -4.0
 phonk_cowbell_gain = 0.7
 phonk_distortion_db = 6.0
 phonk_bass_boost_db = 3.0
+title_text = st.text_input(
+    "Title",
+    value="",
+    help="Displayed above the ring to highlight the track.",
+)
+artist_text = st.text_input(
+    "Artist",
+    value="",
+    help="Shown beneath the title line for quick crediting.",
+)
+hashtags_text = st.text_input(
+    "Hashtags (optional)",
+    value="",
+    help="Will appear below the ring; include your own #tags for TikTok reach.",
+)
 
 if phonk_enabled:
     phonk_target_bpm = st.slider(
@@ -970,6 +1080,9 @@ if render_button:
                 reverb_amount=reverb_amount,
                 start_time=float(start_time),
                 end_time=float(end_time),
+                title_text=title_text,
+                artist_text=artist_text,
+                hashtags_text=hashtags_text,
             )
 
             progress.progress(100)
