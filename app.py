@@ -422,7 +422,7 @@ def get_band_style(index, value, total_bands, min_width=2, max_width=10):
 
 
 def draw_circular_spectrum_frame(
-    t, y, sr, beat_times, reverb_amount=0.0, n_bands=64, bands=None
+    t, y, sr, beat_times, reverb_amount=0.0, n_bands=64, bands=None, beat_fireworks=False
 ):
     """Circular spectrum with mirrored bands, black background, and glow."""
 
@@ -436,6 +436,8 @@ def draw_circular_spectrum_frame(
     glow_draw = ImageDraw.Draw(glow_layer)
     pulse_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     pulse_draw = ImageDraw.Draw(pulse_layer)
+    fireworks_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    fireworks_draw = ImageDraw.Draw(fireworks_layer)
 
     base_radius = 250
     max_extra = 240 * (1 + 0.5 * beat)
@@ -503,8 +505,51 @@ def draw_circular_spectrum_frame(
             width=thickness,
         )
 
+    # Optional beat fireworks: multiple rings and particle bursts gated by a toggle
+    if beat_fireworks and beat > 0.0:
+        max_radius = min(W, H) * 0.5 - 10
+        ring_start = min(base_radius + max_extra * 0.6, max_radius)
+        ring_count = 3
+        for idx in range(ring_count):
+            growth = 1.0 + 0.25 * idx + 0.9 * beat
+            ring_radius = min(ring_start * growth, max_radius)
+            ring_alpha = int(50 + 90 * beat * (1.0 - idx / max(ring_count - 1, 1)))
+            ring_width = max(2, int(3 + 6 * beat - idx))
+            ring_color = (200, 220, 255, min(255, ring_alpha))
+            fireworks_draw.ellipse(
+                (
+                    CENTER[0] - ring_radius,
+                    CENTER[1] - ring_radius,
+                    CENTER[0] + ring_radius,
+                    CENTER[1] + ring_radius,
+                ),
+                outline=ring_color,
+                width=ring_width,
+            )
+
+        rng = np.random.default_rng(int(t * 120))
+        particle_count = int(25 + 120 * beat)
+        for _ in range(particle_count):
+            angle = rng.uniform(0, 2 * math.pi)
+            radius = rng.uniform(base_radius * 0.7, min(base_radius + max_extra * 1.2, max_radius))
+            size = rng.uniform(2.5, 6.0 + 8.0 * beat)
+            alpha = int(80 + 140 * beat)
+            color = (255, 240, 200, min(255, alpha))
+            x = CENTER[0] + radius * math.cos(angle)
+            y = CENTER[1] + radius * math.sin(angle)
+            fireworks_draw.ellipse(
+                (
+                    x - size,
+                    y - size,
+                    x + size,
+                    y + size,
+                ),
+                fill=color,
+            )
+
     composed = Image.alpha_composite(img.convert("RGBA"), glow_layer)
-    composed = Image.alpha_composite(composed, pulse_layer).convert("RGB")
+    composed = Image.alpha_composite(composed, pulse_layer)
+    composed = Image.alpha_composite(composed, fireworks_layer).convert("RGB")
     return np.array(composed)
 
 
@@ -555,6 +600,7 @@ def render_mp4(
     fps=30,
     max_duration=None,
     reverb_amount=0.0,
+    beat_fireworks=False,
     smoothing=0.0,
     start_time=0.0,
     end_time=None,
@@ -629,6 +675,7 @@ def render_mp4(
             sr,
             beat_times,
             reverb_amount=reverb_amount,
+            beat_fireworks=beat_fireworks,
             n_bands=band_count,
             bands=bands0,
         )
@@ -655,6 +702,7 @@ def render_mp4(
                 sr,
                 beat_times,
                 reverb_amount=reverb_amount,
+                beat_fireworks=beat_fireworks,
                 n_bands=band_count,
                 bands=bands,
             )
@@ -769,6 +817,10 @@ reverb_amount = st.slider(
     help="Blend in a synthetic echo. Move the slider to instantly update the preview audio and visuals.",
 )
 
+beat_fireworks = st.checkbox(
+    "Beat fireworks",
+    value=False,
+    help="Add expanding rings and particle bursts that scale with beat intensity (circular template).",
 smoothness = st.slider(
     "Smoothness",
     min_value=0.0,
@@ -1022,6 +1074,7 @@ if render_button:
                 fps=int(fps),
                 max_duration=max_d,
                 reverb_amount=reverb_amount,
+                beat_fireworks=beat_fireworks,
                 smoothing=float(smoothness),
                 start_time=float(start_time),
                 end_time=float(end_time),
