@@ -604,8 +604,7 @@ def draw_circular_spectrum_frame(
     top_color, bottom_color = gradient_colors
 
     background = get_gradient_background((W, H), top_color, bottom_color)
-    img = background.copy()
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+    img = background.convert("RGBA")
     draw = ImageDraw.Draw(img)
     glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow_layer)
@@ -771,7 +770,7 @@ def draw_circular_spectrum_frame(
                 fill=color,
             )
 
-    composed = Image.alpha_composite(img.convert("RGBA"), glow_layer)
+    composed = Image.alpha_composite(img, glow_layer)
     composed = Image.alpha_composite(composed, pulse_layer)
     text_draw = ImageDraw.Draw(composed)
 
@@ -811,12 +810,9 @@ def draw_circular_spectrum_frame(
             fill=(235, 235, 245, 255),
         )
 
-    composed = Image.alpha_composite(composed, fireworks_layer).convert("RGB")
-    
-    composed = Image.alpha_composite(img, glow_layer)
-    composed = Image.alpha_composite(composed, pulse_layer).convert("RGB")
+    composed = Image.alpha_composite(composed, fireworks_layer)
 
-    return np.array(composed)
+    return np.array(composed.convert("RGB"))
 
 
 def draw_bar_spectrum_frame(
@@ -1144,7 +1140,6 @@ cover_blur_radius = 8
 cover_soft_border = True
 cover_drop_shadow = True
 
-col1, col2 = st.columns(2)
 with col1:
     template_choice = st.radio(
         "Template",
@@ -1161,6 +1156,13 @@ with col2:
         key="bitrate_kbps",
         help="Higher bitrates preserve more detail, especially at higher frame rates.",
     )
+with col3:
+    gradient_choice = st.selectbox(
+        "Background gradient",
+        gradient_options,
+        index=default_gradient_index,
+        help="Applied to the circular spectrum to mimic TikTok's neon gradients.",
+    )
 
 shutter_fraction = st.slider(
     "Shutter fraction (relative to frame duration)",
@@ -1174,14 +1176,6 @@ shutter_fraction = st.slider(
         " Lower values give crisper 60 FPS exports; 0.5 approximates a 180° shutter."
     ),
 )
-    fps = st.slider("FPS", 10, 60, FPS_DEFAULT)
-with col3:
-    gradient_choice = st.selectbox(
-        "Background gradient",
-        gradient_options,
-        index=default_gradient_index,
-        help="Applied to the circular spectrum to mimic TikTok's neon gradients.",
-    )
 
 if "Circular" in template_choice:
     with st.expander("Cover art options", expanded=True):
@@ -1227,6 +1221,7 @@ beat_fireworks = st.checkbox(
     "Beat fireworks",
     value=False,
     help="Add expanding rings and particle bursts that scale with beat intensity (circular template).",
+)
 smoothness = st.slider(
     "Smoothness",
     min_value=0.0,
