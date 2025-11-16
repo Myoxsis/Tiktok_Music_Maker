@@ -23,6 +23,8 @@ matplotlib.use("Agg")
 # ---------- CONFIG ----------
 W, H = 1080, 1920   # TikTok-style vertical resolution
 FPS_DEFAULT = 30
+BITRATE_DEFAULT_KBPS = 5000
+SHUTTER_DEFAULT_FRACTION = 0.5
 
 
 # ---------- AUDIO ANALYSIS ----------
@@ -549,6 +551,8 @@ def render_mp4(
     output_path,
     template="circular",
     fps=30,
+    bitrate_kbps=BITRATE_DEFAULT_KBPS,
+    shutter_fraction=SHUTTER_DEFAULT_FRACTION,
     max_duration=None,
     reverb_amount=0.0,
     start_time=0.0,
@@ -600,29 +604,36 @@ def render_mp4(
     ax = plt.axes([0, 0, 1, 1])  # full-figure axes
     ax.axis("off")
 
+    def render_frame_at_time(t):
+        t = float(np.clip(t, 0.0, max(1e-6, duration)))
+        if template == "circular":
+            return draw_circular_spectrum_frame(
+                t, y, sr, beat_times, reverb_amount=reverb_amount
+            )
+        return draw_bar_spectrum_frame(
+            t, y, sr, beat_times, reverb_amount=reverb_amount
+        )
+
+    def render_with_motion_blur(t):
+        if shutter_fraction <= 0.0:
+            return render_frame_at_time(t)
+
+        exposure = shutter_fraction / max(fps, 1e-3)
+        half_exposure = exposure * 0.5
+        sample_times = np.linspace(t - half_exposure, t + half_exposure, 3)
+        frames = [render_frame_at_time(ts) for ts in sample_times]
+        blended = np.mean(np.stack(frames, axis=0), axis=0)
+        return np.clip(blended, 0, 255).astype(np.uint8)
+
     # Initial frame
     t0 = times[0]
-    if template == "circular":
-        frame0 = draw_circular_spectrum_frame(
-            t0, y, sr, beat_times, reverb_amount=reverb_amount
-        )
-    else:
-        frame0 = draw_bar_spectrum_frame(
-            t0, y, sr, beat_times, reverb_amount=reverb_amount
-        )
+    frame0 = render_with_motion_blur(t0)
 
     im = ax.imshow(frame0, animated=True)
 
     def update(i):
         t = times[i]
-        if template == "circular":
-            frame = draw_circular_spectrum_frame(
-                t, y, sr, beat_times, reverb_amount=reverb_amount
-            )
-        else:
-            frame = draw_bar_spectrum_frame(
-                t, y, sr, beat_times, reverb_amount=reverb_amount
-            )
+        frame = render_with_motion_blur(t)
         im.set_array(frame)
         return [im]
 
@@ -638,7 +649,7 @@ def render_mp4(
     temp_video_path = temp_video.name
     temp_video.close()
 
-    writer = FFMpegWriter(fps=fps, bitrate=5000)
+    writer = FFMpegWriter(fps=fps, bitrate=int(bitrate_kbps))
     ani.save(temp_video_path, writer=writer)
 
     plt.close(fig)
@@ -693,6 +704,13 @@ preview_y = None
 preview_sr = None
 detected_phonk_bpm = None
 
+if "fps_slider" not in st.session_state:
+    st.session_state.fps_slider = FPS_DEFAULT
+if "bitrate_kbps" not in st.session_state:
+    st.session_state.bitrate_kbps = BITRATE_DEFAULT_KBPS
+if "shutter_fraction" not in st.session_state:
+    st.session_state.shutter_fraction = SHUTTER_DEFAULT_FRACTION
+
 if uploaded_file is not None:
     uploaded_file.seek(0)
     try:
@@ -706,6 +724,19 @@ if uploaded_file is not None:
     finally:
         uploaded_file.seek(0)
 
+st.subheader("Quick presets")
+preset_cols = st.columns(2)
+with preset_cols[0]:
+    if st.button("TikTok Crisp 60 FPS / 8 Mbps"):
+        st.session_state.fps_slider = 60
+        st.session_state.bitrate_kbps = 8000
+        st.session_state.shutter_fraction = 0.35
+with preset_cols[1]:
+    if st.button("Balanced 30 FPS / 5 Mbps"):
+        st.session_state.fps_slider = 30
+        st.session_state.bitrate_kbps = 5000
+        st.session_state.shutter_fraction = 0.5
+
 col1, col2 = st.columns(2)
 with col1:
     template_choice = st.radio(
@@ -713,7 +744,29 @@ with col1:
         ["Circular spectrum", "Bar spectrum"],
     )
 with col2:
-    fps = st.slider("FPS", 10, 60, FPS_DEFAULT)
+    fps = st.slider("FPS", 10, 60, st.session_state.fps_slider, key="fps_slider")
+    bitrate_kbps = st.number_input(
+        "FFmpeg video bitrate (kbps)",
+        min_value=1000,
+        max_value=20000,
+        step=500,
+        value=st.session_state.bitrate_kbps,
+        key="bitrate_kbps",
+        help="Higher bitrates preserve more detail, especially at higher frame rates.",
+    )
+
+shutter_fraction = st.slider(
+    "Shutter fraction (relative to frame duration)",
+    min_value=0.1,
+    max_value=1.0,
+    value=st.session_state.shutter_fraction,
+    step=0.05,
+    key="shutter_fraction",
+    help=(
+        "Controls motion blur by averaging across part of each frame interval."
+        " Lower values give crisper 60 FPS exports; 0.5 approximates a 180° shutter."
+    ),
+)
 
 reverb_amount = st.slider(
     "Reverb amount",
@@ -966,6 +1019,8 @@ if render_button:
                 output_path=output_path,
                 template=template_key,
                 fps=int(fps),
+                bitrate_kbps=int(bitrate_kbps),
+                shutter_fraction=float(shutter_fraction),
                 max_duration=max_d,
                 reverb_amount=reverb_amount,
                 start_time=float(start_time),
