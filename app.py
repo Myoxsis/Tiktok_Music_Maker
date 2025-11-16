@@ -462,10 +462,12 @@ def draw_circular_spectrum_frame(
     title_text="",
     artist_text="",
     hashtags_text="",
+    bands=None, beat_fireworks=False
 ):
     """Circular spectrum with mirrored bands, black background, and glow."""
 
-    bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+    if bands is None:
+        bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
     beat = beat_intensity(t, beat_times)
 
     img = Image.new("RGB", (W, H), (0, 0, 0))
@@ -474,6 +476,8 @@ def draw_circular_spectrum_frame(
     glow_draw = ImageDraw.Draw(glow_layer)
     pulse_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     pulse_draw = ImageDraw.Draw(pulse_layer)
+    fireworks_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    fireworks_draw = ImageDraw.Draw(fireworks_layer)
 
     base_radius = 250
     max_extra = 240 * (1 + 0.5 * beat)
@@ -541,6 +545,48 @@ def draw_circular_spectrum_frame(
             width=thickness,
         )
 
+    # Optional beat fireworks: multiple rings and particle bursts gated by a toggle
+    if beat_fireworks and beat > 0.0:
+        max_radius = min(W, H) * 0.5 - 10
+        ring_start = min(base_radius + max_extra * 0.6, max_radius)
+        ring_count = 3
+        for idx in range(ring_count):
+            growth = 1.0 + 0.25 * idx + 0.9 * beat
+            ring_radius = min(ring_start * growth, max_radius)
+            ring_alpha = int(50 + 90 * beat * (1.0 - idx / max(ring_count - 1, 1)))
+            ring_width = max(2, int(3 + 6 * beat - idx))
+            ring_color = (200, 220, 255, min(255, ring_alpha))
+            fireworks_draw.ellipse(
+                (
+                    CENTER[0] - ring_radius,
+                    CENTER[1] - ring_radius,
+                    CENTER[0] + ring_radius,
+                    CENTER[1] + ring_radius,
+                ),
+                outline=ring_color,
+                width=ring_width,
+            )
+
+        rng = np.random.default_rng(int(t * 120))
+        particle_count = int(25 + 120 * beat)
+        for _ in range(particle_count):
+            angle = rng.uniform(0, 2 * math.pi)
+            radius = rng.uniform(base_radius * 0.7, min(base_radius + max_extra * 1.2, max_radius))
+            size = rng.uniform(2.5, 6.0 + 8.0 * beat)
+            alpha = int(80 + 140 * beat)
+            color = (255, 240, 200, min(255, alpha))
+            x = CENTER[0] + radius * math.cos(angle)
+            y = CENTER[1] + radius * math.sin(angle)
+            fireworks_draw.ellipse(
+                (
+                    x - size,
+                    y - size,
+                    x + size,
+                    y + size,
+                ),
+                fill=color,
+            )
+
     composed = Image.alpha_composite(img.convert("RGBA"), glow_layer)
     composed = Image.alpha_composite(composed, pulse_layer)
     text_draw = ImageDraw.Draw(composed)
@@ -581,15 +627,18 @@ def draw_circular_spectrum_frame(
             fill=(235, 235, 245, 255),
         )
 
-    composed = composed.convert("RGB")
+    composed = Image.alpha_composite(composed, fireworks_layer).convert("RGB")
     return np.array(composed)
 
 
-def draw_bar_spectrum_frame(t, y, sr, beat_times, reverb_amount=0.0, n_bands=32):
+def draw_bar_spectrum_frame(
+    t, y, sr, beat_times, reverb_amount=0.0, n_bands=32, bands=None
+):
     """
     Bar spectrum visual. If reverb=True, adds a faint echo above the bars on beats.
     """
-    bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+    if bands is None:
+        bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
     beat = beat_intensity(t, beat_times)
 
     img = Image.new("RGB", (W, H), (0, 0, 0))
@@ -629,6 +678,8 @@ def render_mp4(
     fps=30,
     max_duration=None,
     reverb_amount=0.0,
+    beat_fireworks=False,
+    smoothing=0.0,
     start_time=0.0,
     end_time=None,
     title_text="",
@@ -682,7 +733,22 @@ def render_mp4(
     ax.axis("off")
 
     # Initial frame
+    smoothing = float(np.clip(smoothing, 0.0, 0.99))
+    band_count = 64 if template == "circular" else 32
+    prev_bands = None
+
+    def blended_bands(t):
+        nonlocal prev_bands
+        raw = get_spectrum_at_time(y, sr, t, n_bands=band_count)
+        if prev_bands is None or smoothing <= 0.0:
+            blended = raw
+        else:
+            blended = (smoothing * prev_bands) + ((1.0 - smoothing) * raw)
+        prev_bands = blended
+        return blended
+
     t0 = times[0]
+    bands0 = blended_bands(t0)
     if template == "circular":
         frame0 = draw_circular_spectrum_frame(
             t0,
@@ -693,16 +759,26 @@ def render_mp4(
             title_text=title_text,
             artist_text=artist_text,
             hashtags_text=hashtags_text,
+            beat_fireworks=beat_fireworks,
+            n_bands=band_count,
+            bands=bands0,
         )
     else:
         frame0 = draw_bar_spectrum_frame(
-            t0, y, sr, beat_times, reverb_amount=reverb_amount
+            t0,
+            y,
+            sr,
+            beat_times,
+            reverb_amount=reverb_amount,
+            n_bands=band_count,
+            bands=bands0,
         )
 
     im = ax.imshow(frame0, animated=True)
 
     def update(i):
         t = times[i]
+        bands = blended_bands(t)
         if template == "circular":
             frame = draw_circular_spectrum_frame(
                 t,
@@ -713,10 +789,19 @@ def render_mp4(
                 title_text=title_text,
                 artist_text=artist_text,
                 hashtags_text=hashtags_text,
+                beat_fireworks=beat_fireworks,
+                n_bands=band_count,
+                bands=bands,
             )
         else:
             frame = draw_bar_spectrum_frame(
-                t, y, sr, beat_times, reverb_amount=reverb_amount
+                t,
+                y,
+                sr,
+                beat_times,
+                reverb_amount=reverb_amount,
+                n_bands=band_count,
+                bands=bands,
             )
         im.set_array(frame)
         return [im]
@@ -817,6 +902,19 @@ reverb_amount = st.slider(
     value=0.0,
     step=0.05,
     help="Blend in a synthetic echo. Move the slider to instantly update the preview audio and visuals.",
+)
+
+beat_fireworks = st.checkbox(
+    "Beat fireworks",
+    value=False,
+    help="Add expanding rings and particle bursts that scale with beat intensity (circular template).",
+smoothness = st.slider(
+    "Smoothness",
+    min_value=0.0,
+    max_value=0.95,
+    value=0.0,
+    step=0.05,
+    help="Blend each spectrum frame with the previous one for smoother animation. Higher values reduce flicker.",
 )
 
 playback_speed = st.slider(
@@ -1078,6 +1176,8 @@ if render_button:
                 fps=int(fps),
                 max_duration=max_d,
                 reverb_amount=reverb_amount,
+                beat_fireworks=beat_fireworks,
+                smoothing=float(smoothness),
                 start_time=float(start_time),
                 end_time=float(end_time),
                 title_text=title_text,
