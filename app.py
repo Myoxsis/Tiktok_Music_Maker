@@ -368,6 +368,13 @@ CENTER = (W // 2, H // 2)
 BAND_COLORMAP = cm.get_cmap("plasma")
 
 
+GRADIENT_PRESETS = {
+    "Neon purple / blue": ((40, 5, 85), (25, 180, 255)),
+    "Electric pink / teal": ((255, 20, 147), (0, 220, 200)),
+    "Midnight indigo": ((12, 6, 35), (10, 48, 85)),
+}
+DEFAULT_GRADIENT_PRESET = "Neon purple / blue"
+
 _BACKGROUND_CACHE = {}
 
 
@@ -511,6 +518,12 @@ def get_gradient_background(
     return gradient
 
 
+def resolve_gradient_colors(preset_name):
+    return GRADIENT_PRESETS.get(
+        preset_name, GRADIENT_PRESETS[DEFAULT_GRADIENT_PRESET]
+    )
+
+
 def get_band_style(index, value, total_bands, min_width=2, max_width=10):
     """Return (color, width, glow_alpha) for a spectral band."""
     if total_bands <= 1:
@@ -568,6 +581,7 @@ def draw_circular_spectrum_frame(
     beat_times,
     reverb_amount=0.0,
     n_bands=64,
+    gradient_colors=None,
     title_text="",
     artist_text="",
     hashtags_text="",
@@ -583,6 +597,12 @@ def draw_circular_spectrum_frame(
         bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
     beat = beat_intensity(t, beat_times)
 
+    if gradient_colors is None:
+        gradient_colors = GRADIENT_PRESETS[DEFAULT_GRADIENT_PRESET]
+    top_color, bottom_color = gradient_colors
+
+    background = get_gradient_background((W, H), top_color, bottom_color)
+    img = background.copy()
     img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
     draw = ImageDraw.Draw(img)
     glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -848,6 +868,7 @@ def render_mp4(
     smoothing=0.0,
     start_time=0.0,
     end_time=None,
+    gradient_preset=None,
     cover_art=None,
     cover_blur=8,
     cover_soft_border=True,
@@ -918,6 +939,7 @@ def render_mp4(
         return blended
 
     t0 = times[0]
+    gradient_colors = resolve_gradient_colors(gradient_preset)
     bands0 = blended_bands(t0)
     if template == "circular":
         frame0 = draw_circular_spectrum_frame(
@@ -926,6 +948,7 @@ def render_mp4(
             sr,
             beat_times,
             reverb_amount=reverb_amount,
+            gradient_colors=gradient_colors,
             cover_art=cover_art,
             cover_blur=cover_blur,
             cover_soft_border=cover_soft_border,
@@ -960,6 +983,7 @@ def render_mp4(
                 sr,
                 beat_times,
                 reverb_amount=reverb_amount,
+                gradient_colors=gradient_colors,
                 cover_art=cover_art,
                 cover_blur=cover_blur,
                 cover_soft_border=cover_soft_border,
@@ -1064,6 +1088,10 @@ if uploaded_file is not None:
     finally:
         uploaded_file.seek(0)
 
+gradient_options = list(GRADIENT_PRESETS.keys())
+default_gradient_index = gradient_options.index(DEFAULT_GRADIENT_PRESET)
+
+col1, col2, col3 = st.columns(3)
 cover_art_file = None
 cover_auto_enabled = False
 cover_blur_radius = 8
@@ -1078,6 +1106,13 @@ with col1:
     )
 with col2:
     fps = st.slider("FPS", 10, 60, FPS_DEFAULT)
+with col3:
+    gradient_choice = st.selectbox(
+        "Background gradient",
+        gradient_options,
+        index=default_gradient_index,
+        help="Applied to the circular spectrum to mimic TikTok's neon gradients.",
+    )
 
 if "Circular" in template_choice:
     with st.expander("Cover art options", expanded=True):
@@ -1402,6 +1437,7 @@ if render_button:
                 smoothing=float(smoothness),
                 start_time=float(start_time),
                 end_time=float(end_time),
+                gradient_preset=gradient_choice,
                 cover_art=cover_image,
                 cover_blur=cover_blur_radius,
                 cover_soft_border=cover_soft_border,
