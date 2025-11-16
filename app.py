@@ -427,7 +427,6 @@ def draw_circular_spectrum_frame(
     """Circular spectrum with mirrored bands, black background, and glow."""
 
     bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
-    mirrored_bands = np.concatenate([bands, bands[::-1]])
     beat = beat_intensity(t, beat_times)
 
     img = Image.new("RGB", (W, H), (0, 0, 0))
@@ -454,32 +453,36 @@ def draw_circular_spectrum_frame(
         width=circle_thickness,
     )
 
-    n = len(mirrored_bands)
+    n = len(bands)
     wave_points = []
-    for i, v in enumerate(mirrored_bands):
-        angle = 2 * math.pi * i / n
+    for i, v in enumerate(bands):
         extra = float(v) * max_extra
         r1 = base_radius
         r2 = base_radius + extra
 
-        x1 = CENTER[0] + r1 * math.cos(angle)
-        y1 = CENTER[1] + r1 * math.sin(angle)
-        x2 = CENTER[0] + r2 * math.cos(angle)
-        y2 = CENTER[1] + r2 * math.sin(angle)
-
-        wave_points.append((x2, y2))
-
         color, width, glow_alpha = get_band_style(i, v, n)
-        draw.line((x1, y1, x2, y2), width=width, fill=color)
 
-        glow_width = max(width + 2, int(width * 1.8))
-        glow_color = (*color, glow_alpha)
-        glow_draw.line((x1, y1, x2, y2), width=glow_width, fill=glow_color)
+        for offset in (0.0, math.pi):
+            angle = (2 * math.pi * i / n) + offset
+            x1 = CENTER[0] + r1 * math.cos(angle)
+            y1 = CENTER[1] + r1 * math.sin(angle)
+            x2 = CENTER[0] + r2 * math.cos(angle)
+            y2 = CENTER[1] + r2 * math.sin(angle)
+
+            wave_points.append((angle % (2 * math.pi), (x2, y2)))
+
+            draw.line((x1, y1, x2, y2), width=width, fill=color)
+
+            glow_width = max(width + 2, int(width * 1.8))
+            glow_color = (*color, glow_alpha)
+            glow_draw.line((x1, y1, x2, y2), width=glow_width, fill=glow_color)
 
     # Draw a wavy outline following the tips of the bars to emphasize the
     # circular spectrum "wave".
     if len(wave_points) > 2:
-        wave_outline = wave_points + [wave_points[0]]
+        wave_points.sort(key=lambda item: item[0])
+        ordered_points = [pt for _, pt in wave_points]
+        wave_outline = ordered_points + [ordered_points[0]]
         wave_color = (180, 200, 255, 90)
         glow_draw.line(wave_outline, width=6, fill=wave_color)
 
