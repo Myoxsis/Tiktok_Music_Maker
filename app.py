@@ -422,11 +422,12 @@ def get_band_style(index, value, total_bands, min_width=2, max_width=10):
 
 
 def draw_circular_spectrum_frame(
-    t, y, sr, beat_times, reverb_amount=0.0, n_bands=64
+    t, y, sr, beat_times, reverb_amount=0.0, n_bands=64, bands=None
 ):
     """Circular spectrum with mirrored bands, black background, and glow."""
 
-    bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+    if bands is None:
+        bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
     beat = beat_intensity(t, beat_times)
 
     img = Image.new("RGB", (W, H), (0, 0, 0))
@@ -507,11 +508,14 @@ def draw_circular_spectrum_frame(
     return np.array(composed)
 
 
-def draw_bar_spectrum_frame(t, y, sr, beat_times, reverb_amount=0.0, n_bands=32):
+def draw_bar_spectrum_frame(
+    t, y, sr, beat_times, reverb_amount=0.0, n_bands=32, bands=None
+):
     """
     Bar spectrum visual. If reverb=True, adds a faint echo above the bars on beats.
     """
-    bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+    if bands is None:
+        bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
     beat = beat_intensity(t, beat_times)
 
     img = Image.new("RGB", (W, H), (0, 0, 0))
@@ -551,6 +555,7 @@ def render_mp4(
     fps=30,
     max_duration=None,
     reverb_amount=0.0,
+    smoothing=0.0,
     start_time=0.0,
     end_time=None,
 ):
@@ -601,27 +606,67 @@ def render_mp4(
     ax.axis("off")
 
     # Initial frame
+    smoothing = float(np.clip(smoothing, 0.0, 0.99))
+    band_count = 64 if template == "circular" else 32
+    prev_bands = None
+
+    def blended_bands(t):
+        nonlocal prev_bands
+        raw = get_spectrum_at_time(y, sr, t, n_bands=band_count)
+        if prev_bands is None or smoothing <= 0.0:
+            blended = raw
+        else:
+            blended = (smoothing * prev_bands) + ((1.0 - smoothing) * raw)
+        prev_bands = blended
+        return blended
+
     t0 = times[0]
+    bands0 = blended_bands(t0)
     if template == "circular":
         frame0 = draw_circular_spectrum_frame(
-            t0, y, sr, beat_times, reverb_amount=reverb_amount
+            t0,
+            y,
+            sr,
+            beat_times,
+            reverb_amount=reverb_amount,
+            n_bands=band_count,
+            bands=bands0,
         )
     else:
         frame0 = draw_bar_spectrum_frame(
-            t0, y, sr, beat_times, reverb_amount=reverb_amount
+            t0,
+            y,
+            sr,
+            beat_times,
+            reverb_amount=reverb_amount,
+            n_bands=band_count,
+            bands=bands0,
         )
 
     im = ax.imshow(frame0, animated=True)
 
     def update(i):
         t = times[i]
+        bands = blended_bands(t)
         if template == "circular":
             frame = draw_circular_spectrum_frame(
-                t, y, sr, beat_times, reverb_amount=reverb_amount
+                t,
+                y,
+                sr,
+                beat_times,
+                reverb_amount=reverb_amount,
+                n_bands=band_count,
+                bands=bands,
             )
         else:
             frame = draw_bar_spectrum_frame(
-                t, y, sr, beat_times, reverb_amount=reverb_amount
+                t,
+                y,
+                sr,
+                beat_times,
+                reverb_amount=reverb_amount,
+                n_bands=band_count,
+                bands=bands,
             )
         im.set_array(frame)
         return [im]
@@ -722,6 +767,15 @@ reverb_amount = st.slider(
     value=0.0,
     step=0.05,
     help="Blend in a synthetic echo. Move the slider to instantly update the preview audio and visuals.",
+)
+
+smoothness = st.slider(
+    "Smoothness",
+    min_value=0.0,
+    max_value=0.95,
+    value=0.0,
+    step=0.05,
+    help="Blend each spectrum frame with the previous one for smoother animation. Higher values reduce flicker.",
 )
 
 playback_speed = st.slider(
@@ -968,6 +1022,7 @@ if render_button:
                 fps=int(fps),
                 max_duration=max_d,
                 reverb_amount=reverb_amount,
+                smoothing=float(smoothness),
                 start_time=float(start_time),
                 end_time=float(end_time),
             )
