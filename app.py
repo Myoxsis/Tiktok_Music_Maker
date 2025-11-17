@@ -680,9 +680,10 @@ def draw_circular_spectrum_frame(
     )
 
     n = len(bands)
+    bass_strength = float(np.max(bands[: max(1, n // 6)]))
     wave_points = []
     for i, v in enumerate(bands):
-        extra = float(v) * max_extra
+        extra = (0.65 * float(v) + 0.35 * bass_strength) * max_extra
         r1 = base_radius
         r2 = base_radius + extra
 
@@ -833,8 +834,11 @@ def draw_bar_spectrum_frame(
     bar_width = (W - 2 * margin_side) / n_bands
     max_bar_height = H * 0.6
 
+    bass_strength = float(np.max(bands[: max(1, n_bands // 6)]))
     for i, v in enumerate(bands):
-        height = float(v) * max_bar_height * (1 + 0.4 * beat)
+        height = (0.7 * float(v) + 0.3 * bass_strength) * max_bar_height
+        height *= 1 + 0.4 * beat
+        height = min(max_bar_height, height)
         x1 = int(margin_side + i * bar_width)
         x2 = int(margin_side + (i + 1) * bar_width * 0.85)
         y2 = H - margin_bottom
@@ -1415,9 +1419,21 @@ if uploaded_file is not None:
             if start_time == end_time:
                 st.warning("Choose a range longer than 0 seconds for rendering.")
 
-render_button = st.button("Render MP4")
+render_cols = st.columns(2)
+with render_cols[0]:
+    render_preview = st.button(
+        "Render preview (faster)",
+        help="Renders with lightweight settings so you can validate the visuals quickly.",
+        key="render_preview",
+    )
+with render_cols[1]:
+    render_production = st.button(
+        "Render production (best quality)",
+        help="Exports using your full-quality FPS, bitrate, and shutter settings.",
+        key="render_production",
+    )
 
-if render_button:
+if render_preview or render_production:
     if uploaded_file is None:
         st.error("Please upload an audio file first.")
     else:
@@ -1435,7 +1451,17 @@ if render_button:
         output_dir = tempfile.mkdtemp()
         output_path = os.path.join(output_dir, "visualizer.mp4")
 
-        st.write("Rendering... longer duration and higher FPS will take more time.")
+        is_preview = render_preview
+        render_fps = 20 if is_preview else int(fps)
+        render_bitrate = 2500 if is_preview else int(bitrate_kbps)
+        render_shutter = 0.25 if is_preview else float(shutter_fraction)
+
+        if is_preview:
+            st.write(
+                "Rendering preview... using lower FPS/bitrate for a quicker turnaround."
+            )
+        else:
+            st.write("Rendering production... applying your best-quality settings.")
         progress = st.progress(0)
 
         processed_audio_path = None
@@ -1494,9 +1520,9 @@ if render_button:
                 audio_path=processed_audio_path,
                 output_path=output_path,
                 template=template_key,
-                fps=int(fps),
-                bitrate_kbps=int(bitrate_kbps),
-                shutter_fraction=float(shutter_fraction),
+                fps=render_fps,
+                bitrate_kbps=render_bitrate,
+                shutter_fraction=render_shutter,
                 max_duration=max_d,
                 reverb_amount=reverb_amount,
                 beat_fireworks=beat_fireworks,
