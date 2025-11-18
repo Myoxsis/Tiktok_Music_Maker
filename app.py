@@ -857,6 +857,85 @@ def draw_bar_spectrum_frame(
     return np.array(img)
 
 
+def draw_wmp_pattern_frame(
+    t,
+    y,
+    sr,
+    beat_times,
+    gradient_colors=None,
+    n_bands=48,
+    bands=None,
+):
+    """
+    Retro Windows Media Player-inspired plasma with swirling ribbons.
+    """
+
+    if bands is None:
+        bands = get_spectrum_at_time(y, sr, t, n_bands=n_bands)
+
+    beat = beat_intensity(t, beat_times)
+    gradient_colors = gradient_colors or GRADIENT_PRESETS[DEFAULT_GRADIENT_PRESET]
+
+    energy = float(np.mean(bands))
+    bass = float(np.max(bands[: max(1, n_bands // 6)]))
+    treble = float(np.max(bands[-max(1, n_bands // 6) :]))
+
+    x = np.linspace(-1.2, 1.2, W)
+    y_grid = np.linspace(-1.2, 1.2, H)
+    xx, yy = np.meshgrid(x, y_grid)
+
+    swirl_phase = t * 0.8 + beat * 0.6
+    swirl = np.sin(6 * (xx * np.cos(swirl_phase) + yy * np.sin(swirl_phase)) + beat * 5.0)
+
+    plasma = (
+        np.sin(7.0 * xx + t * 1.6 + 3.5 * bass)
+        + np.sin(6.5 * yy + t * 1.15 + 3.0 * treble)
+        + np.sin(5.0 * (xx * np.sin(t * 0.7) + yy * np.cos(t * 0.9)) + beat * 4.0)
+    )
+    plasma += swirl * (0.45 + 0.55 * beat)
+
+    norm = (plasma - plasma.min()) / max(1e-6, plasma.max() - plasma.min())
+    palette = cm.get_cmap("turbo")
+    rgb = (palette(norm)[..., :3] * 255).astype(np.uint8)
+
+    base = Image.fromarray(rgb)
+    base = base.filter(ImageFilter.GaussianBlur(radius=1.2 + 3.2 * beat))
+
+    bg = get_gradient_background((W, H), *gradient_colors).convert("RGB")
+    blend_amount = min(1.0, 0.55 + 0.35 * energy + 0.2 * beat)
+    blended = Image.blend(bg, base, blend_amount)
+
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    rng = np.random.default_rng(int(t * 90))
+    ribbon_count = 5
+    for idx in range(ribbon_count):
+        hue_shift = (idx / ribbon_count) + rng.uniform(-0.05, 0.05)
+        hue_shift %= 1.0
+        color = cm.hsv(hue_shift)
+        ribbon_color = (
+            int(color[0] * 255),
+            int(color[1] * 255),
+            int(color[2] * 255),
+            int(70 + 140 * beat),
+        )
+
+        path = []
+        spread_x = W * (0.28 + 0.35 * energy)
+        spread_y = H * (0.28 + 0.35 * energy)
+        for step in range(6):
+            angle = t * (0.5 + 0.25 * idx) + step * 1.05
+            px = CENTER[0] + spread_x * math.sin(angle + beat * 0.8)
+            py = CENTER[1] + spread_y * math.cos(angle * 1.1 + bass * 0.8)
+            path.append((px, py))
+
+        overlay_draw.line(path, fill=ribbon_color, width=int(6 + 12 * bass))
+
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=2.6))
+    final = Image.alpha_composite(blended.convert("RGBA"), overlay)
+    return np.array(final.convert("RGB"))
+
+
 # ---------- RENDERING WITH MATPLOTLIB + FFMPEG ----------
 
 def render_mp4(
@@ -927,14 +1006,39 @@ def render_mp4(
     ax = plt.axes([0, 0, 1, 1])  # full-figure axes
     ax.axis("off")
 
-    def render_frame_at_time(t):
+    def render_frame_at_time(t, bands=None):
         t = float(np.clip(t, 0.0, max(1e-6, duration)))
         if template == "circular":
             return draw_circular_spectrum_frame(
-                t, y, sr, beat_times, reverb_amount=reverb_amount
+                t,
+                y,
+                sr,
+                beat_times,
+                reverb_amount=reverb_amount,
+                gradient_colors=resolve_gradient_colors(gradient_preset),
+                cover_art=cover_art,
+                cover_blur=cover_blur,
+                cover_soft_border=cover_soft_border,
+                cover_drop_shadow=cover_drop_shadow,
+                title_text=title_text,
+                artist_text=artist_text,
+                hashtags_text=hashtags_text,
+                beat_fireworks=beat_fireworks,
+                n_bands=band_count,
+                bands=bands,
+            )
+        if template == "wmp":
+            return draw_wmp_pattern_frame(
+                t,
+                y,
+                sr,
+                beat_times,
+                gradient_colors=resolve_gradient_colors(gradient_preset),
+                n_bands=band_count,
+                bands=bands,
             )
         return draw_bar_spectrum_frame(
-            t, y, sr, beat_times, reverb_amount=reverb_amount
+            t, y, sr, beat_times, reverb_amount=reverb_amount, n_bands=band_count, bands=bands
         )
 
     def render_with_motion_blur(t):
@@ -950,7 +1054,7 @@ def render_mp4(
 
     # Initial frame
     smoothing = float(np.clip(smoothing, 0.0, 0.99))
-    band_count = 64 if template == "circular" else 32
+    band_count = 64 if template == "circular" else 48 if template == "wmp" else 32
     prev_bands = None
 
     def blended_bands(t):
@@ -965,73 +1069,15 @@ def render_mp4(
 
     t0 = times[0]
     frame0 = render_with_motion_blur(t0)
-    gradient_colors = resolve_gradient_colors(gradient_preset)
     bands0 = blended_bands(t0)
-    if template == "circular":
-        frame0 = draw_circular_spectrum_frame(
-            t0,
-            y,
-            sr,
-            beat_times,
-            reverb_amount=reverb_amount,
-            gradient_colors=gradient_colors,
-            cover_art=cover_art,
-            cover_blur=cover_blur,
-            cover_soft_border=cover_soft_border,
-            cover_drop_shadow=cover_drop_shadow,
-            title_text=title_text,
-            artist_text=artist_text,
-            hashtags_text=hashtags_text,
-            beat_fireworks=beat_fireworks,
-            n_bands=band_count,
-            bands=bands0,
-        )
-    else:
-        frame0 = draw_bar_spectrum_frame(
-            t0,
-            y,
-            sr,
-            beat_times,
-            reverb_amount=reverb_amount,
-            n_bands=band_count,
-            bands=bands0,
-        )
+    frame0 = render_frame_at_time(t0, bands=bands0)
 
     im = ax.imshow(frame0, animated=True)
 
     def update(i):
         t = times[i]
-        frame = render_with_motion_blur(t)
         bands = blended_bands(t)
-        if template == "circular":
-            frame = draw_circular_spectrum_frame(
-                t,
-                y,
-                sr,
-                beat_times,
-                reverb_amount=reverb_amount,
-                gradient_colors=gradient_colors,
-                cover_art=cover_art,
-                cover_blur=cover_blur,
-                cover_soft_border=cover_soft_border,
-                cover_drop_shadow=cover_drop_shadow,
-                title_text=title_text,
-                artist_text=artist_text,
-                hashtags_text=hashtags_text,
-                beat_fireworks=beat_fireworks,
-                n_bands=band_count,
-                bands=bands,
-            )
-        else:
-            frame = draw_bar_spectrum_frame(
-                t,
-                y,
-                sr,
-                beat_times,
-                reverb_amount=reverb_amount,
-                n_bands=band_count,
-                bands=bands,
-            )
+        frame = render_frame_at_time(t, bands=bands)
         im.set_array(frame)
         return [im]
 
@@ -1147,7 +1193,12 @@ cover_drop_shadow = True
 with col1:
     template_choice = st.radio(
         "Template",
-        ["Circular spectrum", "Bar spectrum"],
+        [
+            "Circular spectrum",
+            "Bar spectrum",
+            "Windows Media Player throwback",
+        ],
+        help="Choose from the neon circular visual, crisp bar graph, or a plasma-style throwback to classic media players.",
     )
 with col2:
     fps = st.slider("FPS", 10, 60, st.session_state.fps_slider, key="fps_slider")
@@ -1165,7 +1216,9 @@ with col3:
         "Background gradient",
         gradient_options,
         index=default_gradient_index,
-        help="Applied to the circular spectrum to mimic TikTok's neon gradients.",
+        help=(
+            "Applied to the circular spectrum and throwback plasma modes to keep the visuals colorful."
+        ),
     )
 
 shutter_fraction = st.slider(
@@ -1468,7 +1521,12 @@ if render_preview or render_production:
 
         try:
             progress.progress(10)
-            template_key = "circular" if "Circular" in template_choice else "bars"
+            if "Circular" in template_choice:
+                template_key = "circular"
+            elif "Bar" in template_choice:
+                template_key = "bars"
+            else:
+                template_key = "wmp"
             max_d = max_duration if max_duration > 0 else None
 
             needs_processing = (
