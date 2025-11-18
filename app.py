@@ -564,6 +564,8 @@ def draw_text_with_shadow(
     shadow_color=(0, 0, 0, 180),
     shadow_offset=(2, 3),
     anchor="mm",
+    stroke_width=0,
+    stroke_fill=None,
 ):
     """Draw text with a soft drop shadow for readability."""
 
@@ -572,8 +574,24 @@ def draw_text_with_shadow(
 
     x, y = position
     shadow_pos = (x + shadow_offset[0], y + shadow_offset[1])
-    draw.text(shadow_pos, text, font=font, fill=shadow_color, anchor=anchor)
-    draw.text((x, y), text, font=font, fill=fill, anchor=anchor)
+    draw.text(
+        shadow_pos,
+        text,
+        font=font,
+        fill=shadow_color,
+        anchor=anchor,
+        stroke_width=stroke_width,
+        stroke_fill=shadow_color if stroke_width > 0 else None,
+    )
+    draw.text(
+        (x, y),
+        text,
+        font=font,
+        fill=fill,
+        anchor=anchor,
+        stroke_width=stroke_width,
+        stroke_fill=stroke_fill,
+    )
 
 
 def draw_circular_spectrum_frame(
@@ -592,6 +610,10 @@ def draw_circular_spectrum_frame(
     cover_blur=8,
     cover_soft_border=True,
     cover_drop_shadow=True,
+    handle_text="",
+    cta_text="",
+    cta_position="bottom",
+    cta_pill_style=True,
 ):
     """Circular spectrum with mirrored bands, optional center cover art, and glow."""
 
@@ -612,6 +634,8 @@ def draw_circular_spectrum_frame(
     pulse_draw = ImageDraw.Draw(pulse_layer)
     fireworks_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     fireworks_draw = ImageDraw.Draw(fireworks_layer)
+    safe_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    safe_draw = ImageDraw.Draw(safe_layer)
 
     base_radius = 250
     max_extra = 240 * (1 + 0.5 * beat)
@@ -775,9 +799,69 @@ def draw_circular_spectrum_frame(
     composed = Image.alpha_composite(composed, pulse_layer)
     text_draw = ImageDraw.Draw(composed)
 
-    safe_inset = 90
-    label_area_top = max(safe_inset, CENTER[1] - base_radius - 140)
-    label_area_bottom = min(H - safe_inset, CENTER[1] + base_radius + 150)
+    safe_inset = 180
+    cta_text = cta_text.strip()
+    handle_text = handle_text.strip()
+    handle_text = handle_text if not handle_text or handle_text.startswith("@") else f"@{handle_text}"
+
+    safe_draw.rectangle(
+        [0, 0, W, safe_inset],
+        fill=(0, 0, 0, 40),
+    )
+    safe_draw.rectangle(
+        [0, H - safe_inset, W, H],
+        fill=(0, 0, 0, 40),
+    )
+
+    cta_padding_x = 28
+    cta_padding_y = 16
+    cta_font = load_font(34, bold=True)
+    cta_height = 0
+    cta_width = 0
+    cta_radius = 18
+    cta_y = None
+    if cta_text:
+        text_bbox = text_draw.textbbox((0, 0), cta_text, font=cta_font, stroke_width=2)
+        cta_width = (text_bbox[2] - text_bbox[0]) + 2 * cta_padding_x
+        cta_height = (text_bbox[3] - text_bbox[1]) + 2 * cta_padding_y
+        cta_radius = max(cta_height // 2 if cta_pill_style else 18, 12)
+
+        cta_x0 = CENTER[0] - cta_width // 2
+        cta_y = safe_inset + cta_height // 2 if cta_position == "top" else H - safe_inset - cta_height // 2
+        cta_y0 = int(cta_y - cta_height / 2)
+        cta_x1 = cta_x0 + cta_width
+        cta_y1 = cta_y0 + cta_height
+
+        badge_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        badge_draw = ImageDraw.Draw(badge_layer)
+        shadow_box = [cta_x0 + 4, cta_y0 + 6, cta_x1 + 4, cta_y1 + 6]
+        badge_draw.rounded_rectangle(
+            shadow_box, radius=cta_radius + 2, fill=(0, 0, 0, 90)
+        )
+        badge_draw.rounded_rectangle(
+            [cta_x0, cta_y0, cta_x1, cta_y1],
+            radius=cta_radius,
+            fill=(255, 120, 70, 235),
+            outline=(255, 255, 255, 235),
+            width=2,
+        )
+        draw_text_with_shadow(
+            badge_draw,
+            cta_text,
+            (CENTER[0], cta_y),
+            font=cta_font,
+            fill=(255, 255, 255, 255),
+            anchor="mm",
+            stroke_width=2,
+            stroke_fill=(0, 0, 0, 200),
+        )
+        composed = Image.alpha_composite(composed, badge_layer)
+
+    label_area_top = max(safe_inset + (cta_height + 16 if cta_text and cta_position == "top" else 0), CENTER[1] - base_radius - 140)
+    label_area_bottom = min(
+        H - safe_inset - (cta_height + 16 if cta_text and cta_position == "bottom" else 0),
+        CENTER[1] + base_radius + 150,
+    )
 
     title_font = load_font(58, bold=True)
     subtitle_font = load_font(38)
@@ -790,6 +874,8 @@ def draw_circular_spectrum_frame(
             (CENTER[0], label_area_top),
             font=title_font,
             fill=(245, 245, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0, 160),
         )
 
     if artist_text:
@@ -800,6 +886,20 @@ def draw_circular_spectrum_frame(
             (CENTER[0], artist_y),
             font=subtitle_font,
             fill=(200, 220, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0, 160),
+        )
+
+    if handle_text:
+        handle_y_base = label_area_top + title_font.size + subtitle_font.size + 24 if title_text or artist_text else label_area_top
+        draw_text_with_shadow(
+            text_draw,
+            handle_text,
+            (CENTER[0], handle_y_base),
+            font=subtitle_font,
+            fill=(235, 240, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0, 160),
         )
 
     if hashtags_text:
@@ -809,8 +909,11 @@ def draw_circular_spectrum_frame(
             (CENTER[0], label_area_bottom),
             font=hashtag_font,
             fill=(235, 235, 245, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0, 160),
         )
 
+    composed = Image.alpha_composite(composed, safe_layer)
     composed = Image.alpha_composite(composed, fireworks_layer)
 
     return np.array(composed.convert("RGB"))
@@ -1081,6 +1184,10 @@ def render_mp4(
     title_text="",
     artist_text="",
     hashtags_text="",
+    handle_text="",
+    cta_text="",
+    cta_position="bottom",
+    cta_pill_style=True,
 ):
     """
     Render an MP4 video from the given audio file and template,
@@ -1145,6 +1252,10 @@ def render_mp4(
                 title_text=title_text,
                 artist_text=artist_text,
                 hashtags_text=hashtags_text,
+                handle_text=handle_text,
+                cta_text=cta_text,
+                cta_position=cta_position,
+                cta_pill_style=cta_pill_style,
                 beat_fireworks=beat_fireworks,
                 n_bands=band_count,
                 bands=bands,
@@ -1478,6 +1589,30 @@ hashtags_text = st.text_input(
     value="",
     help="Will appear below the ring; include your own #tags for TikTok reach.",
 )
+handle_text = st.text_input(
+    "@handle",
+    value="",
+    help="Shown alongside the title/artist so viewers can follow your account.",
+)
+cta_text = st.text_input(
+    "CTA badge text",
+    value="",
+    help="Optional call-to-action chip that stays inside the TikTok-safe overlay.",
+)
+cta_col1, cta_col2 = st.columns(2)
+with cta_col1:
+    cta_position = st.radio(
+        "CTA placement",
+        ["top", "bottom"],
+        index=1,
+        help="Choose whether the CTA chip hugs the top or bottom safe area.",
+    )
+with cta_col2:
+    cta_pill_style = st.checkbox(
+        "Pill styling",
+        value=True,
+        help="Round the CTA badge edges into a pill for a TikTok-native look.",
+    )
 
 if phonk_enabled:
     phonk_target_bpm = st.slider(
@@ -1727,6 +1862,10 @@ if render_preview or render_production:
                 title_text=title_text,
                 artist_text=artist_text,
                 hashtags_text=hashtags_text,
+                handle_text=handle_text,
+                cta_text=cta_text,
+                cta_position=cta_position,
+                cta_pill_style=cta_pill_style,
             )
 
             progress.progress(100)
