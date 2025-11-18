@@ -869,6 +869,10 @@ def draw_wmp_pattern_frame(
 ):
     """
     Retro Windows Media Player-inspired plasma with multiple mimic styles.
+
+    The underlying grid is aspect-ratio corrected so the plasma patterns "fit"
+    the tall 9:16 canvas without stretching, and the heavy math runs on a down
+    sampled grid that is resized back to (W, H) for a balanced cost/quality mix.
     """
 
     if bands is None:
@@ -891,8 +895,13 @@ def draw_wmp_pattern_frame(
     }
     palette_name = palette_lookup.get(style_key, "turbo")
 
-    x = np.linspace(-1.2, 1.2, W)
-    y_grid = np.linspace(-1.2, 1.2, H)
+    aspect = H / W
+    sample_w = 540
+    sample_h = max(1, int(sample_w * aspect))
+    x_extent = 1.15 * (W / H)
+    y_extent = 1.15
+    x = np.linspace(-x_extent, x_extent, sample_w)
+    y_grid = np.linspace(-y_extent, y_extent, sample_h)
     xx, yy = np.meshgrid(x, y_grid)
 
     swirl_phase = t * 0.8 + beat * 0.6
@@ -912,7 +921,7 @@ def draw_wmp_pattern_frame(
     palette = cm.get_cmap(palette_name)
     rgb = (palette(norm)[..., :3] * 255).astype(np.uint8)
 
-    base = Image.fromarray(rgb)
+    base = Image.fromarray(rgb).resize((W, H), resample=Image.BILINEAR)
     blur_radius = 0.9 + 2.6 * beat if style_key == "ambiance" else 1.2 + 3.2 * beat
     base = base.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
