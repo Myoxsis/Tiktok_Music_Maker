@@ -865,9 +865,10 @@ def draw_wmp_pattern_frame(
     gradient_colors=None,
     n_bands=48,
     bands=None,
+    style="Alchemy",
 ):
     """
-    Retro Windows Media Player-inspired plasma with swirling ribbons.
+    Retro Windows Media Player-inspired plasma with multiple mimic styles.
     """
 
     if bands is None:
@@ -879,6 +880,16 @@ def draw_wmp_pattern_frame(
     energy = float(np.mean(bands))
     bass = float(np.max(bands[: max(1, n_bands // 6)]))
     treble = float(np.max(bands[-max(1, n_bands // 6) :]))
+
+    style_key = (style or "Alchemy").strip().lower()
+    palette_lookup = {
+        "alchemy": "plasma",
+        "ambiance": "cividis",
+        "bars and waves": "cool",
+        "battery": "Greens",
+        "spikes": "inferno",
+    }
+    palette_name = palette_lookup.get(style_key, "turbo")
 
     x = np.linspace(-1.2, 1.2, W)
     y_grid = np.linspace(-1.2, 1.2, H)
@@ -892,47 +903,148 @@ def draw_wmp_pattern_frame(
         + np.sin(6.5 * yy + t * 1.15 + 3.0 * treble)
         + np.sin(5.0 * (xx * np.sin(t * 0.7) + yy * np.cos(t * 0.9)) + beat * 4.0)
     )
+    if style_key == "ambiance":
+        swirl *= 0.5
+        plasma *= 0.65
     plasma += swirl * (0.45 + 0.55 * beat)
 
     norm = (plasma - plasma.min()) / max(1e-6, plasma.max() - plasma.min())
-    palette = cm.get_cmap("turbo")
+    palette = cm.get_cmap(palette_name)
     rgb = (palette(norm)[..., :3] * 255).astype(np.uint8)
 
     base = Image.fromarray(rgb)
-    base = base.filter(ImageFilter.GaussianBlur(radius=1.2 + 3.2 * beat))
+    blur_radius = 0.9 + 2.6 * beat if style_key == "ambiance" else 1.2 + 3.2 * beat
+    base = base.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
     bg = get_gradient_background((W, H), *gradient_colors).convert("RGB")
     blend_amount = min(1.0, 0.55 + 0.35 * energy + 0.2 * beat)
+    if style_key == "battery":
+        blend_amount = min(1.0, 0.45 + 0.45 * energy + 0.35 * beat)
     blended = Image.blend(bg, base, blend_amount)
 
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    rng = np.random.default_rng(int(t * 90))
-    ribbon_count = 5
-    for idx in range(ribbon_count):
-        hue_shift = (idx / ribbon_count) + rng.uniform(-0.05, 0.05)
-        hue_shift %= 1.0
-        color = cm.hsv(hue_shift)
-        ribbon_color = (
-            int(color[0] * 255),
-            int(color[1] * 255),
-            int(color[2] * 255),
-            int(70 + 140 * beat),
+    base_rgba = blended.convert("RGBA")
+    overlays = []
+
+    if style_key in ("alchemy", "ambiance"):
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        rng = np.random.default_rng(int(t * 90))
+        ribbon_count = 6 if style_key == "alchemy" else 4
+        for idx in range(ribbon_count):
+            hue_shift = (idx / ribbon_count) + rng.uniform(-0.05, 0.05)
+            hue_shift %= 1.0
+            color = cm.hsv(hue_shift)
+            ribbon_color = (
+                int(color[0] * 255),
+                int(color[1] * 255),
+                int(color[2] * 255),
+                int(60 + 150 * (beat + 0.25 * energy)),
+            )
+
+            path = []
+            spread_x = W * (0.28 + 0.35 * energy)
+            spread_y = H * (0.28 + 0.35 * energy)
+            for step in range(6):
+                angle = t * (0.5 + 0.25 * idx) + step * 1.05
+                px = CENTER[0] + spread_x * math.sin(angle + beat * 0.8)
+                py = CENTER[1] + spread_y * math.cos(angle * 1.1 + bass * 0.8)
+                path.append((px, py))
+
+            overlay_draw.line(path, fill=ribbon_color, width=int(6 + 12 * bass))
+
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=2.6))
+        overlays.append(overlay)
+
+    elif style_key == "bars and waves":
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        bar_width = W / n_bands
+        for i, v in enumerate(bands):
+            height = (0.35 + 0.65 * float(v)) * (H * 0.6)
+            x1 = int(i * bar_width)
+            x2 = int((i + 0.8) * bar_width)
+            y1 = int(CENTER[1] - height * 0.5)
+            y2 = int(CENTER[1] + height * 0.5)
+            color = (
+                int(60 + 150 * v),
+                int(110 + 90 * bass),
+                int(220),
+                int(110 + 120 * beat),
+            )
+            overlay_draw.rectangle([x1, y1, x2, y2], fill=color)
+
+        wave_points = []
+        for i, v in enumerate(bands):
+            x = int(i * bar_width + bar_width * 0.5)
+            y = int(CENTER[1] + math.sin(i * 0.35 + t * 4.0) * 40 - v * 150)
+            wave_points.append((x, y))
+        overlay_draw.line(wave_points, fill=(190, 230, 255, 200), width=5)
+        overlays.append(overlay.filter(ImageFilter.GaussianBlur(radius=1.6)))
+
+    elif style_key == "battery":
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        battery_width = int(W * 0.6)
+        battery_height = int(H * 0.18)
+        x0 = CENTER[0] - battery_width // 2
+        y0 = CENTER[1] - battery_height // 2
+        x1 = x0 + battery_width
+        y1 = y0 + battery_height
+        overlay_draw.rounded_rectangle(
+            [x0, y0, x1, y1], radius=28, outline=(80, 200, 120, 230), width=10
+        )
+        cap_width = int(battery_width * 0.06)
+        cap_x0 = x1 + 6
+        cap_y0 = y0 + battery_height // 3
+        cap_x1 = cap_x0 + cap_width
+        cap_y1 = cap_y0 + battery_height // 3
+        overlay_draw.rectangle(
+            [cap_x0, cap_y0, cap_x1, cap_y1], fill=(120, 240, 150, 220)
         )
 
-        path = []
-        spread_x = W * (0.28 + 0.35 * energy)
-        spread_y = H * (0.28 + 0.35 * energy)
-        for step in range(6):
-            angle = t * (0.5 + 0.25 * idx) + step * 1.05
-            px = CENTER[0] + spread_x * math.sin(angle + beat * 0.8)
-            py = CENTER[1] + spread_y * math.cos(angle * 1.1 + bass * 0.8)
-            path.append((px, py))
+        cell_count = 8
+        charge = np.clip(energy + 0.4 * beat + 0.2 * bass, 0.0, 1.0)
+        cell_gap = 6
+        usable_width = battery_width - (cell_gap * (cell_count + 1))
+        cell_width = usable_width / cell_count
+        for i in range(cell_count):
+            filled = (i + 1) / cell_count <= charge + 0.05
+            cx0 = int(x0 + cell_gap + i * (cell_width + cell_gap))
+            cx1 = int(cx0 + cell_width)
+            cy0 = y0 + cell_gap
+            cy1 = y1 - cell_gap
+            fill_alpha = int(120 + 120 * (charge if filled else 0.2))
+            cell_color = (80, 220, 140, fill_alpha if filled else 90)
+            overlay_draw.rounded_rectangle(
+                [cx0, cy0, cx1, cy1], radius=10, fill=cell_color
+            )
+        overlays.append(overlay.filter(ImageFilter.GaussianBlur(radius=1.4)))
 
-        overlay_draw.line(path, fill=ribbon_color, width=int(6 + 12 * bass))
+    elif style_key == "spikes":
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        spike_count = 90
+        max_radius = min(W, H) * 0.55
+        rng = np.random.default_rng(int(t * 120))
+        for i in range(spike_count):
+            angle = (i / spike_count) * 2 * math.pi + rng.uniform(-0.02, 0.02)
+            strength = 0.35 + 0.65 * rng.random()
+            radius = (0.3 + strength * (0.4 + 0.6 * beat)) * max_radius
+            x = CENTER[0] + radius * math.cos(angle)
+            y = CENTER[1] + radius * math.sin(angle)
+            color = (
+                int(210 + 30 * strength),
+                int(150 + 60 * bass),
+                int(80 + 120 * treble),
+                int(80 + 150 * strength),
+            )
+            overlay_draw.line((CENTER[0], CENTER[1], x, y), fill=color, width=3)
+        overlays.append(overlay.filter(ImageFilter.GaussianBlur(radius=1.8)))
 
-    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=2.6))
-    final = Image.alpha_composite(blended.convert("RGBA"), overlay)
+    final = base_rgba
+    for layer in overlays:
+        final = Image.alpha_composite(final, layer)
+
     return np.array(final.convert("RGB"))
 
 
@@ -952,6 +1064,7 @@ def render_mp4(
     start_time=0.0,
     end_time=None,
     gradient_preset=None,
+    wmp_style="Alchemy",
     cover_art=None,
     cover_blur=8,
     cover_soft_border=True,
@@ -1036,6 +1149,7 @@ def render_mp4(
                 gradient_colors=resolve_gradient_colors(gradient_preset),
                 n_bands=band_count,
                 bands=bands,
+                style=wmp_style,
             )
         return draw_bar_spectrum_frame(
             t, y, sr, beat_times, reverb_amount=reverb_amount, n_bands=band_count, bands=bands
@@ -1182,6 +1296,8 @@ with preset_cols[1]:
         st.session_state.shutter_fraction = 0.5
 gradient_options = list(GRADIENT_PRESETS.keys())
 default_gradient_index = gradient_options.index(DEFAULT_GRADIENT_PRESET)
+wmp_styles = ["Alchemy", "Ambiance", "Bars and Waves", "Battery", "Spikes"]
+wmp_style = wmp_styles[0]
 
 col1, col2, col3 = st.columns(3)
 cover_art_file = None
@@ -1200,6 +1316,12 @@ with col1:
         ],
         help="Choose from the neon circular visual, crisp bar graph, or a plasma-style throwback to classic media players.",
     )
+    if "Windows Media Player" in template_choice:
+        wmp_style = st.selectbox(
+            "WMP mimic",
+            wmp_styles,
+            help="Pick from classic throwback modes like Alchemy, Ambiance, Bars and Waves, Battery, or Spikes.",
+        )
 with col2:
     fps = st.slider("FPS", 10, 60, st.session_state.fps_slider, key="fps_slider")
     bitrate_kbps = st.number_input(
@@ -1588,6 +1710,7 @@ if render_preview or render_production:
                 start_time=float(start_time),
                 end_time=float(end_time),
                 gradient_preset=gradient_choice,
+                wmp_style=wmp_style,
                 cover_art=cover_image,
                 cover_blur=cover_blur_radius,
                 cover_soft_border=cover_soft_border,
